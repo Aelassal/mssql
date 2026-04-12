@@ -1,0 +1,137 @@
+<?xml version="1.0" encoding="utf-8"?>
+
+<odoo>
+    <t t-name="account_dynamic_reports.PycusFinancialReportFilters" t-inherit-mode="primary" t-inherit="account_dynamic_reports.PycusFilters">
+        <xpath expr="//div[@name='pycus-filter-sec-2-in-one']" position="inside">
+
+            <div class="col col-2">
+                <span>Compare Date Range</span>
+            </div>
+            <div class="col col-4">
+                <SelectMenu t-props="{choices: state.comparison_date_range.choices,
+                          searchable: false,
+                          autoSort: false,
+                          class: 'pycus-filter-dropdown',
+                          togglerClass: 'your-toggler-class',
+                          required: false,
+                          value: state.comparison_date_range.selectedValue.value,
+                          searchPlaceholder: 'Comparison Date Range',
+                          onSelect: handleComparisonDateRangeSelect,
+                          }"
+                />
+            </div>
+
+            <div class="col col-2">
+                <span>Compare Date From</span>
+            </div>
+            <div class="col col-4">
+                <DateTimeInput
+                      id="comparisonDateFrom"
+                      value="state.comparison_date_from"
+                      type="'date'"
+                      placeholder="fromPlaceholder"
+                      onChange.bind="onComparisonDateFromChanged"
+                />
+            </div>
+            <div class="col col-2">
+                <span>Compare Date To</span>
+            </div>
+            <div class="col col-4">
+                <DateTimeInput
+                      id="comparisonDateTo"
+                      value="state.comparison_date_to"
+                      type="'date'"
+                      placeholder="toPlaceholder"
+                      onChange.bind="onComparisonDateToChanged"
+                />
+            </div>
+
+            <div class="col col-2">
+                <span>Hide Zero Balance</span>
+            </div>
+            <div class="col col-4">
+                <SelectMenu t-props="{choices: state.hide_zero_balance.choices,
+                          searchable: false,
+                          autoSort: false,
+                          class: 'pycus-filter-dropdown',
+                          togglerClass: 'your-toggler-class',
+                          required: true,
+                          value: state.hide_zero_balance.selectedValue.value,
+                          searchPlaceholder: 'Hide Zero Balance',
+                          onSelect: handleHideZerBalanceSelect,
+                          }"
+                />
+            </div>
+
+            <div class="col col-2">
+                <span>View Format</span>
+            </div>
+            <div class="col col-4">
+                <SelectMenu t-props="{choices: state.view_format_selection.choices,
+                          searchable: false,
+                          autoSort: false,
+                          class: 'pycus-filter-dropdown',
+                          togglerClass: 'your-toggler-class',
+                          required: true,
+                          value: state.view_format_selection.selectedValue.value,
+                          searchPlaceholder: 'View Format',
+                          onSelect: handleViewFormatSelect,
+                          }"
+                />
+            </div>
+
+            <div class="col col-2">
+                <span>Compare with Budget</span>
+            </div>
+            <div class="col col-4">
+                <SelectMenu t-props="{choices: state.budget_selection.choices,
+                          searchable: true,
+                          autoSort: false,
+                          class: 'pycus-filter-dropdown',
+                          togglerClass: 'your-toggler-class',
+                          required: false,
+                          value: state.budget_selection.selectedValue.value,
+                          searchPlaceholder: 'Select Budget',
+                          onSelect: handleBudgetSelect,
+                          }"
+                />
+            </div>
+
+        </xpath>
+
+        <xpath expr="//div[@name='pycus-filter-sec-1-in-one']" position="replace">
+            <div class="row" name="pycus-filter-sec-1-in-one">
+
+                <div class="col col-2">
+                    <span>Journals</span>
+                </div>
+                <div class="col col-10">
+                    <PycusDropdown
+                        class="'pycus-filter-dropdown'"
+                        tableName="'account.journal'"
+                        defaultValues="state.defaultJournalValues"
+                        placeholder="'Search Here...'"
+                        updateToParent.bind="selectedJournals"
+                    />
+                </div>
+
+            </div>
+
+            <div class="row">
+                <div class="col col-2">
+                    <span>Account Tags</span>
+                </div>
+                <div class="col col-10">
+                    <PycusDropdown
+                        class="'pycus-filter-dropdown'"
+                        tableName="'account.account.tag'"
+                        defaultValues="state.defaultAccountTagValues"
+                        placeholder="'Search Here...'"
+                        updateToParent.bind="selectedAccountTags"
+                    />
+                </div>
+            </div>
+        </xpath>
+
+    </t>
+</odoo>

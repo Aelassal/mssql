@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+
+<template xml:space="preserve">
+    <t t-name="account_dynamic_reports.PycusAnnotation">
+        <span class="py-annotation-wrapper d-inline-block ms-2" style="position: relative;">
+            <i t-att-class="hasNote ? 'fa fa-sticky-note text-warning' : 'fa fa-sticky-note-o text-muted'"
+               style="cursor: pointer; font-size: 0.85em;"
+               t-att-title="hasNote ? state.note : 'Add note'"
+               t-on-click="toggleEdit"/>
+            <div t-if="state.isEditing" class="py-annotation-popover card shadow-sm"
+                 style="position: absolute; z-index: 1050; top: 100%; left: 0; width: 280px; padding: 8px;">
+                <textarea class="form-control form-control-sm mb-2" rows="3"
+                          t-att-value="state.editNote"
+                          t-on-input="(ev) => this.state.editNote = ev.target.value"
+                          placeholder="Add a note..."/>
+                <div class="d-flex justify-content-between">
+                    <div>
+                        <button class="btn btn-sm btn-primary me-1" t-on-click="saveNote">Save</button>
+                        <button class="btn btn-sm btn-secondary" t-on-click="toggleEdit">Cancel</button>
+                    </div>
+                    <button t-if="hasNote" class="btn btn-sm btn-outline-danger" t-on-click="deleteNote">
+                        <i class="fa fa-trash"/>
+                    </button>
+                </div>
+            </div>
+        </span>
+    </t>
+</template>

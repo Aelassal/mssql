@@ -1,0 +1,135 @@
+<?xml version="1.0" encoding="utf-8"?>
+
+<template xml:space="preserve">
+
+    <t t-name="account_dynamic_reports.generalLedgerLine">
+        <tr class="py-main-tr" t-attf-id="main_move_line_{state.account_line.id}"
+            t-on-click="()=>onGlLineClicked(this)"
+            t-att-class="(state.subLinesVisibility ? 'py-font-weight-500' : '')"
+              >
+                <td colspan="5"
+                    t-on-mouseover="(ev) => this.handleHover(ev, true)"
+                    t-on-mouseout="(ev) => this.handleHover(ev, false)">
+
+                    <div style="display: flex; align-items: center;">
+                        <i t-att-class="(state.subLinesVisibility ? 'fa fa-caret-down' : 'fa fa-caret-right')"/>
+                        <t t-esc="state.account_line.account_code"/> <t t-esc="state.account_line.account_name"/>
+                        <button t-if="state.viewGlVisibility"
+                                t-on-click="(ev) => this.openAccountAction(ev, state.account_line.account_id)"
+                                class="btn btn_action py-btn-link">
+                            <i class="fa fa-book me-1"/>Account</button>
+                        <button t-if="state.viewGlVisibility"
+                                t-on-click="(ev) => this.viewGlLinesAction(ev, state.account_line.id_list)"
+                                class="btn btn_action py-btn-link">
+                            <i class="fa fa-list me-1"/>Journal Items</button>
+                        <PycusAnnotation reportType="'general_ledger'" lineRef="state.account_line.account_id" note="state.account_line.annotation || ''"/>
+                    </div>
+                </td>
+                <td align="right" t-att-class="(state.account_line.debit == 0 ? 'py-font-weight-100' : '')"><t t-esc="this.formatFieldMonetary(state.account_line.debit)"/></td>
+                <td align="right" t-att-class="(state.account_line.credit == 0 ? 'py-font-weight-100' : '')"><t t-esc="this.formatFieldMonetary(state.account_line.credit)"/></td>
+                <td align="right"><t t-esc="this.formatFieldMonetary(state.account_line.balance)"/></td>
+                <td></td>
+                <td></td>
+                <td></td>
+        </tr>
+
+        <tr class="py-initial-ending-tr" t-if="state.subLinesVisibility &amp; renderPageNumbers().length > 1">
+            <td colspan="8" class="page-numbers">
+                <div>
+                    <t t-foreach="renderPageNumbers()" t-as="pageNumber" t-key="pageNumber">
+                        <a t-on-click="() => this.goToPage(pageNumber)" t-attf-class="{{ pageNumber === state.currentPage ? 'active-page' : '' }}">
+                            <t t-esc="pageNumber"/>
+                        </a>
+                    </t>
+                </div>
+            </td>
+        </tr>
+
+        <t t-foreach="state.data" t-as="row" t-key="row.lid" t-if="state.subLinesVisibility">
+            <t t-if="row.ttype == 'initial'">
+                <tr class="py-initial-ending-tr">
+                  <td colspan="5" align="left">Initial Balance</td>
+                  <td align="right" t-att-class="(row.debit == 0 ? 'py-font-weight-100' : '')"><t t-esc="this.formatFieldMonetary(row.debit)"/></td>
+                  <td align="right" t-att-class="(row.debit == 0 ? 'py-font-weight-100' : '')"><t t-esc="this.formatFieldMonetary(row.credit)"/></td>
+                  <td align="right"><t t-esc="this.formatFieldMonetary(row.balance)"/></td>
+                  <td align="right"></td>
+                  <td align="right"></td>
+                  <td></td>
+                </tr>
+            </t>
+            <t t-if="row.ttype == 'strict'">
+                <tr class="py-sub-tr">
+                  <td><t t-esc="row.move_name"/></td>
+                  <td>
+                    <button
+                        t-on-click="(ev) => this.viewJournalEnryAction(ev, row.move_id)"
+                        class="btn btn_action py-btn-link">Entry</button>
+                  </td>
+                  <td><t t-esc="this.formatDate(row.ldate)"/></td>
+                  <td><t t-esc="row.lname"/></td>
+                  <td><t t-esc="row.partner_name"/></td>
+                  <td align="right" t-att-class="(row.debit === 0 ? 'py-font-weight-100' : '')"><t t-esc="this.formatFieldMonetary(row.debit)"/></td>
+                  <td align="right" t-att-class="(row.credit === 0 ? 'py-font-weight-100' : '')"><t t-esc="this.formatFieldMonetary(row.credit)"/></td>
+                  <td align="right" ><t t-esc="this.formatFieldMonetary(row.balance)"/></td>
+                  <td align="right" t-att-class="(row.debit === 0 ? 'py-font-weight-100' : '')">
+                    <t t-if="row.debit != 0 and row.amount_currency != 0"> 
+                        <t t-esc="this.formatFieldMonetary(row.debit_currency, row.currency_id)"/>
+                    </t>
+                    <t t-elif="row.debit === 0 and row.amount_currency != 0"> 
+                        <t t-esc="this.formatFieldMonetary(0, row.currency_id)"/>
+                    </t>
+                    <t t-else="">
+                        <td align="right"></td>
+                    </t>
+                  </td>
+                  <td align="right" t-att-class="(row.credit === 0 ? 'py-font-weight-100' : '')">
+                    <t t-if="row.credit != 0 and row.amount_currency != 0">
+                        <t t-esc="this.formatFieldMonetary(row.credit_currency, row.currency_id)"/>
+                    </t>
+                    <t t-elif="row.credit === 0 and row.amount_currency != 0"> 
+                        <t t-esc="this.formatFieldMonetary(0, row.currency_id)"/>
+                    </t>
+                    <t t-else="">
+                        <td align="right"></td>
+                    </t>
+                  </td>
+                  <td align="right" t-att-class="(row.amount_currency === 0 ? 'py-font-weight-100' : '')">
+                    <t t-if="row.amount_currency != 0">
+                        <t t-esc="this.formatFieldMonetary(row.amount_currency, row.currency_id)"/>
+                    </t>
+                    <t t-else="">
+                        <td align="right"></td>
+                    </t>
+                  </td>
+                </tr>
+            </t>
+            <t t-if="row.ttype == 'ending'">
+                <tr class="py-initial-ending-tr">
+                  <td colspan="5" align="left">Ending Balance</td>
+                  <td align="right" t-att-class="(row.debit === 0 ? 'py-font-weight-100' : '')"><t t-esc="this.formatFieldMonetary(row.debit)"/></td>
+                  <td align="right" t-att-class="(row.credit === 0 ? 'py-font-weight-100' : '')"><t t-esc="this.formatFieldMonetary(row.credit)"/></td>
+                  <td align="right"><t t-esc="this.formatFieldMonetary(row.balance)"/></td>
+                  <td align="right"></td>
+                  <td align="right"></td>
+                  <td align="right"></td>
+                </tr>
+            </t>
+            <t t-if="row.ttype == 'tax_summary'">
+                <tr class="py-tax-summary-tr">
+                  <td colspan="5" align="left" style="padding-left: 25px;">
+                      <i class="fa fa-calculator me-1"/>
+                      <strong>Tax: </strong><t t-esc="row.tax_name"/>
+                  </td>
+                  <td align="right"><strong>Base: </strong><t t-esc="this.formatFieldMonetary(row.base_amount)"/></td>
+                  <td align="right"><strong>Tax: </strong><t t-esc="this.formatFieldMonetary(row.tax_amount)"/></td>
+                  <td></td>
+                  <td></td>
+                  <td></td>
+                  <td></td>
+                </tr>
+            </t>
+
+        </t>
+    </t>
+
+</template>
