@@ -1,0 +1,493 @@
+Debug Queries for POSDataA (mssql_direct_invoice)
+===================================================
+Database: POSDataA
+Connection: sqlcmd -S localhost -U SA -P 'P@ss00902A' -C -d POSDataA -N -W
+
+NOTE: Replace dates and session/invoice IDs with your actual values.
+      Employee table in this DB is tblEmployeesInfo (not tblEmployees).
+
+
+================================================================================
+SALES — SESSIONS
+================================================================================
+
+Q1: Sessions for a date — summary with verification
+-----------------------------------------------------
+SELECT
+    ca.SessionID,
+    ca.SessionDate,
+    ca.EmployeeID,
+    e.EmployeeName AS CashierName,
+    ca.InvoiceCount,
+    ca.SalesInvoiceCount,
+    ca.ReturnInvoiceCount,
+    ca.LineCount AS StoredLineCount,
+    COUNT(id.InvoiceDetailID) AS CalculatedLineCount,
+    ca.ItemsCount AS StoredItemsCount,
+    CAST(SUM(id.Quantity) AS INT) AS CalculatedItemsCount,
+    ROUND(ca.NetTotal, 2) AS NetTotal,
+    ROUND(ca.ActualAmount, 2) AS ActualAmount,
+    ROUND(ca.NetTotalDiff, 2) AS NetTotalDiff,
+    ca.CashierClosed,
+    ca.SessionClosed,
+    CASE WHEN ca.LineCount = COUNT(id.InvoiceDetailID) THEN 'OK' ELSE 'MISMATCH' END AS LineCountMatch,
+    CASE WHEN ca.ItemsCount = CAST(SUM(id.Quantity) AS INT) THEN 'OK' ELSE 'MISMATCH' END AS ItemsCountMatch
+FROM tblCashierActivity ca
+LEFT JOIN tblEmployeesInfo e ON ca.EmployeeID = e.EmployeeID
+INNER JOIN tblInvoice i ON ca.SessionID = i.SessionID
+INNER JOIN tblInvoiceDetail id ON i.InvoiceID = id.InvoiceID
+WHERE ca.SessionDate >= '2026-04-07'
+  AND ca.SessionDate < '2026-04-08'
+GROUP BY
+    ca.SessionID, ca.SessionDate, ca.EmployeeID, e.EmployeeName,
+    ca.InvoiceCount, ca.SalesInvoiceCount, ca.ReturnInvoiceCount,
+    ca.LineCount, ca.ItemsCount, ca.NetTotal, ca.ActualAmount, ca.NetTotalDiff,
+    ca.CashierClosed, ca.SessionClosed
+ORDER BY ca.SessionID DESC;
+
+
+Q2: Session payments — per payment method with totals
+------------------------------------------------------
+SELECT
+    cad.PaymentType,
+    pt.PaymentType AS PaymentMethodName,
+    ROUND(cad.PCAmount, 2) AS SystemAmount,
+    ROUND(cad.ActualAmount, 2) AS TerminalAmount,
+    ROUND(cad.DifAmount, 2) AS Difference,
+    cad.DiffNote AS VarianceNote
+FROM tblCashierActivityDetail cad
+INNER JOIN tblCashierActivity ca ON cad.SessionID = ca.SessionID
+LEFT JOIN tblPaymentType pt ON cad.PaymentType = pt.PaymentTypeID
+WHERE ca.SessionID = 12390
+
+UNION ALL
+
+SELECT
+    NULL, 'TOTAL',
+    ROUND(SUM(cad.PCAmount), 2),
+    ROUND(SUM(cad.ActualAmount), 2),
+    ROUND(SUM(cad.DifAmount), 2),
+    NULL
+FROM tblCashierActivityDetail cad
+INNER JOIN tblCashierActivity ca ON cad.SessionID = ca.SessionID
+WHERE ca.SessionID = 12390;
+
+
+Q3: Full session report — payment methods as columns
+------------------------------------------------------
+SELECT
+    ca.SessionID, ca.SessionDate, ca.EmployeeID, e.EmployeeName AS CashierName,
+    ca.InvoiceCount, ca.SalesInvoiceCount, ca.ReturnInvoiceCount,
+    ca.LineCount, ca.ItemsCount,
+    ROUND(ca.NetTotal, 2) AS NetTotal,
+    ROUND(ca.ActualAmount, 2) AS CashCounted,
+    ROUND(ca.NetTotalDiff, 2) AS CashVariance,
+    ROUND(SUM(CASE WHEN cad.PaymentType = 1 THEN cad.PCAmount ELSE 0 END), 2) AS [Cash_System],
+    ROUND(SUM(CASE WHEN cad.PaymentType = 1 THEN cad.ActualAmount ELSE 0 END), 2) AS [Cash_Terminal],
+    ROUND(SUM(CASE WHEN cad.PaymentType = 2 THEN cad.PCAmount ELSE 0 END), 2) AS [Mada_System],
+    ROUND(SUM(CASE WHEN cad.PaymentType = 2 THEN cad.ActualAmount ELSE 0 END), 2) AS [Mada_Terminal],
+    ROUND(SUM(CASE WHEN cad.PaymentType = 3 THEN cad.PCAmount ELSE 0 END), 2) AS [Visa_System],
+    ROUND(SUM(CASE WHEN cad.PaymentType = 3 THEN cad.ActualAmount ELSE 0 END), 2) AS [Visa_Terminal],
+    ROUND(SUM(CASE WHEN cad.PaymentType = 4 THEN cad.PCAmount ELSE 0 END), 2) AS [MasterCard_System],
+    ROUND(SUM(CASE WHEN cad.PaymentType = 4 THEN cad.ActualAmount ELSE 0 END), 2) AS [MasterCard_Terminal],
+    ROUND(SUM(CASE WHEN cad.PaymentType = 5 THEN cad.PCAmount ELSE 0 END), 2) AS [ReturnVoucher_System],
+    ROUND(SUM(CASE WHEN cad.PaymentType = 5 THEN cad.ActualAmount ELSE 0 END), 2) AS [ReturnVoucher_Terminal],
+    ROUND(SUM(CASE WHEN cad.PaymentType = 6 THEN cad.PCAmount ELSE 0 END), 2) AS [OnAccount_System],
+    ROUND(SUM(CASE WHEN cad.PaymentType = 6 THEN cad.ActualAmount ELSE 0 END), 2) AS [OnAccount_Terminal],
+    ROUND(SUM(CASE WHEN cad.PaymentType = 10 THEN cad.PCAmount ELSE 0 END), 2) AS [Donation_System],
+    ROUND(SUM(CASE WHEN cad.PaymentType = 10 THEN cad.ActualAmount ELSE 0 END), 2) AS [Donation_Terminal],
+    ROUND(SUM(CASE WHEN cad.PaymentType = 20 THEN cad.PCAmount ELSE 0 END), 2) AS [Coupon_System],
+    ROUND(SUM(CASE WHEN cad.PaymentType = 20 THEN cad.ActualAmount ELSE 0 END), 2) AS [Coupon_Terminal],
+    ROUND(SUM(CASE WHEN cad.PaymentType = 30 THEN cad.PCAmount ELSE 0 END), 2) AS [Ports_System],
+    ROUND(SUM(CASE WHEN cad.PaymentType = 30 THEN cad.ActualAmount ELSE 0 END), 2) AS [Ports_Terminal],
+    ROUND(SUM(CASE WHEN cad.PaymentType = 40 THEN cad.PCAmount ELSE 0 END), 2) AS [Points_System],
+    ROUND(SUM(CASE WHEN cad.PaymentType = 40 THEN cad.ActualAmount ELSE 0 END), 2) AS [Points_Terminal],
+    ROUND(SUM(CASE WHEN cad.PaymentType = 60 THEN cad.PCAmount ELSE 0 END), 2) AS [STCPay_System],
+    ROUND(SUM(CASE WHEN cad.PaymentType = 60 THEN cad.ActualAmount ELSE 0 END), 2) AS [STCPay_Terminal],
+    ROUND(SUM(CASE WHEN cad.PaymentType = 70 THEN cad.PCAmount ELSE 0 END), 2) AS [BankTransfer_System],
+    ROUND(SUM(CASE WHEN cad.PaymentType = 70 THEN cad.ActualAmount ELSE 0 END), 2) AS [BankTransfer_Terminal],
+    ca.CashierClosed, ca.SessionClosed
+FROM tblCashierActivity ca
+LEFT JOIN tblEmployeesInfo e ON ca.EmployeeID = e.EmployeeID
+LEFT JOIN tblCashierActivityDetail cad ON ca.SessionID = cad.SessionID
+WHERE ca.SessionID = 12390
+GROUP BY
+    ca.SessionID, ca.SessionDate, ca.EmployeeID, e.EmployeeName,
+    ca.InvoiceCount, ca.SalesInvoiceCount, ca.ReturnInvoiceCount,
+    ca.LineCount, ca.ItemsCount, ca.NetTotal, ca.ActualAmount, ca.NetTotalDiff,
+    ca.CashierClosed, ca.SessionClosed;
+
+
+Q4: Products sold in a session (non-returned only) with totals
+---------------------------------------------------------------
+SELECT
+    ROW_NUMBER() OVER (ORDER BY SUM(id.Quantity) DESC) AS Rank,
+    id.ItemID, id.ItemName, id.EnglishName, id.BarCode, id.UnitName,
+    SUM(id.Quantity) AS TotalQuantity,
+    COUNT(*) AS TimesSold,
+    ROUND(MIN(id.UnitPrice), 2) AS MinPrice,
+    ROUND(MAX(id.UnitPrice), 2) AS MaxPrice,
+    ROUND(AVG(id.UnitPrice), 2) AS AvgPrice,
+    ROUND(SUM(id.SubTotal), 2) AS SubTotal,
+    ROUND(SUM(id.LineDiscount), 2) AS TotalDiscount
+FROM tblInvoice i
+INNER JOIN tblInvoiceDetail id ON i.InvoiceID = id.InvoiceID
+WHERE i.SessionID = 12390 AND i.IsReturned = 0
+GROUP BY id.ItemID, id.ItemName, id.EnglishName, id.BarCode, id.UnitName
+
+UNION ALL
+
+SELECT
+    9999, NULL, 'TOTALS', NULL, NULL, NULL,
+    SUM(id.Quantity), COUNT(*), NULL, NULL, NULL,
+    ROUND(SUM(id.SubTotal), 2),
+    ROUND(SUM(id.LineDiscount), 2)
+FROM tblInvoice i
+INNER JOIN tblInvoiceDetail id ON i.InvoiceID = id.InvoiceID
+WHERE i.SessionID = 12390 AND i.IsReturned = 0
+ORDER BY Rank;
+
+
+Q5: How NetTotal is calculated — sales minus returns
+------------------------------------------------------
+SELECT
+    'Sales (IsReturned=0)' AS Step,
+    ROUND(SUM(i.NetTotal), 2) AS Amount
+FROM tblInvoice i
+WHERE i.SessionID = 12390 AND i.IsReturned = 0
+
+UNION ALL
+
+SELECT
+    'Minus CRA Returns' AS Step,
+    -ROUND(ISNULL(SUM(r.ReturnAmount), 0), 2)
+FROM tblCashierActivityReturnAmount r
+WHERE r.SessionID = 12390
+
+UNION ALL
+
+SELECT
+    'Calculated Total' AS Step,
+    ROUND(
+        (SELECT ISNULL(SUM(NetTotal), 0) FROM tblInvoice WHERE SessionID = 12390 AND IsReturned = 0) -
+        (SELECT ISNULL(SUM(ReturnAmount), 0) FROM tblCashierActivityReturnAmount WHERE SessionID = 12390)
+    , 2)
+
+UNION ALL
+
+SELECT
+    'Stored in Session' AS Step,
+    ROUND(ca.NetTotal, 2)
+FROM tblCashierActivity ca
+WHERE ca.SessionID = 12390;
+
+
+================================================================================
+SALES — RETURNS & CREDIT NOTES
+================================================================================
+
+Q6: Return vouchers for a session (CRA + ReturnCode + ZATCA details)
+---------------------------------------------------------------------
+SELECT
+    cra.ReturnCode, cra.SessionID,
+    ROUND(cra.ReturnAmount, 2) AS ReturnAmount,
+    cra.ReturnDate,
+    rc.ReturnInvoiceID AS OriginalInvoiceID,
+    rc.InvoiceID AS ReturnReceiptID,
+    rc.Used, rc.Canceled,
+    zd.ItemID, zd.ItemName, zd.Quantity, zd.UnitPrice,
+    ROUND(zd.SubTotal, 2) AS SubTotal, zd.TaxAmount, zd.TaxPercent
+FROM tblCashierActivityReturnAmount cra
+JOIN tblInvoiceReturnCode rc ON cra.ReturnCode = rc.ReturnCode
+LEFT JOIN tblZatcaCreditNote zcn ON rc.InvoiceID = zcn.InvoiceID
+LEFT JOIN tblZatcaCreditNoteDetail zd ON zcn.InvoiceID = zd.InvoiceID
+WHERE cra.SessionID = 12390
+ORDER BY cra.ReturnCode, zd.LineNumber;
+
+
+Q7: PT5 (Return Voucher) payment for a session
+-------------------------------------------------
+SELECT
+    cad.SessionID,
+    cad.PaymentType,
+    ROUND(cad.PCAmount, 2) AS PCAmount,
+    ROUND(cad.ActualAmount, 2) AS ActualAmount,
+    ROUND(cad.DifAmount, 2) AS DifAmount,
+    CASE
+        WHEN cad.PCAmount < 0 THEN 'Actual Return (money out)'
+        WHEN cad.PCAmount > 0 THEN 'Voucher Redemption (payment)'
+        ELSE 'Zero'
+    END AS PT5Type
+FROM tblCashierActivityDetail cad
+WHERE cad.SessionID = 12390 AND cad.PaymentType = 5;
+
+
+Q8: Returned invoices in a session
+------------------------------------
+SELECT
+    i.InvoiceID, i.ReturnInvoiceID, i.IsReturned,
+    i.CustomerName, i.PhoneNo,
+    ROUND(i.NetTotal, 2) AS NetTotal,
+    i.ReturnReason, i.ReturnInvoiceNote
+FROM tblInvoice i
+WHERE i.SessionID = 12390 AND i.IsReturned = 1
+ORDER BY i.InvoiceID;
+
+
+Q9: Credit sales (unpaid invoices) in a session
+-------------------------------------------------
+SELECT
+    i.InvoiceID, i.CustomerName, i.PhoneNo,
+    ROUND(i.NetTotal, 2) AS NetTotal,
+    i.CashAmount, i.SpanAmount, i.CreditCardAmount, i.VisaAmount,
+    i.MasterCard, i.CheckAmount, i.ReturnAmount, i.ReturnSlip
+FROM tblInvoice i
+WHERE i.SessionID = 12390
+  AND i.IsReturned = 0 AND i.NetTotal > 0
+  AND ISNULL(i.CashAmount, 0) = 0 AND ISNULL(i.SpanAmount, 0) = 0
+  AND ISNULL(i.CreditCardAmount, 0) = 0 AND ISNULL(i.VisaAmount, 0) = 0
+  AND ISNULL(i.MasterCard, 0) = 0 AND ISNULL(i.CheckAmount, 0) = 0
+  AND ISNULL(i.ReturnAmount, 0) = 0 AND ISNULL(i.ReturnSlip, 0) = 0
+ORDER BY i.InvoiceID;
+
+
+Q10: Daily returns summary (CRA-based — what the code uses)
+--------------------------------------------------------------
+SELECT
+    CAST(cra.ReturnDate AS DATE) AS ReturnDate,
+    COUNT(*) AS ReturnCount,
+    ROUND(SUM(cra.ReturnAmount), 2) AS TotalReturnAmount
+FROM tblCashierActivityReturnAmount cra
+WHERE cra.ReturnDate >= '2026-03-01' AND cra.ReturnDate < '2026-03-02'
+GROUP BY CAST(cra.ReturnDate AS DATE);
+
+
+Q10b: All credit notes issued on a date (from tblZatcaCreditNote)
+-------------------------------------------------------------------
+NOTE: Uses 02:00-02:00 business day window.
+This may show MORE credit notes than Q10 because some belong to
+sessions with NULL SessionDate or sessions that started on a prior date.
+The code only processes returns via CRA vouchers linked to sessions for
+the sync date — credit notes from orphan sessions will be missed.
+
+SELECT
+    zcn.InvoiceID AS CreditNoteID,
+    zcn.ReturnInvoiceID AS OriginalInvoiceID,
+    zcn.SessionID,
+    ca.SessionDate,
+    zcn.CustomerName,
+    ROUND(zcn.NetTotal, 2) AS NetTotal,
+    zcn.InvoiceDate AS CreditNoteDate,
+    CASE
+        WHEN ca.SessionDate IS NULL THEN 'ORPHAN (no session date)'
+        WHEN ca.SessionDate >= '2026-03-01 02:00:00' AND ca.SessionDate < '2026-03-02 02:00:00' THEN 'IN SYNC DATE'
+        ELSE 'DIFFERENT SESSION DATE'
+    END AS SyncStatus
+FROM tblZatcaCreditNote zcn
+LEFT JOIN tblCashierActivity ca ON zcn.SessionID = ca.SessionID
+WHERE zcn.InvoiceDate >= '2026-03-01 02:00:00' AND zcn.InvoiceDate < '2026-03-02 02:00:00'
+ORDER BY zcn.SessionID, zcn.InvoiceID;
+
+
+Q10c: Credit note detail lines for a specific credit note
+------------------------------------------------------------
+SELECT
+    zd.InvoiceID, zd.LineNumber, zd.ItemID, zd.ItemName,
+    zd.Quantity, ROUND(zd.UnitPrice, 2) AS UnitPrice,
+    ROUND(zd.SubTotal, 2) AS SubTotal,
+    ROUND(zd.TaxAmount, 2) AS TaxAmount, zd.TaxPercent
+FROM tblZatcaCreditNoteDetail zd
+WHERE zd.InvoiceID = 2603010011700006
+ORDER BY zd.LineNumber;
+
+
+Q10d: Compare CRA vouchers vs ZatcaCreditNote for a date
+-----------------------------------------------------------
+-- Shows how many credit notes are captured by CRA vs total issued
+-- Uses 02:00-02:00 business day window
+SELECT 'CRA vouchers (code uses these)' AS Source, COUNT(*) AS Cnt,
+    ROUND(SUM(cra.ReturnAmount), 2) AS TotalAmount
+FROM tblCashierActivityReturnAmount cra
+WHERE cra.ReturnDate >= '2026-03-01 02:00:00' AND cra.ReturnDate < '2026-03-02 02:00:00'
+
+UNION ALL
+
+SELECT 'ZatcaCreditNote (all issued)', COUNT(*),
+    ROUND(SUM(zcn.NetTotal), 2)
+FROM tblZatcaCreditNote zcn
+WHERE zcn.InvoiceDate >= '2026-03-01 02:00:00' AND zcn.InvoiceDate < '2026-03-02 02:00:00'
+
+UNION ALL
+
+SELECT 'ZatcaCreditNote in synced sessions only', COUNT(*),
+    ROUND(SUM(zcn.NetTotal), 2)
+FROM tblZatcaCreditNote zcn
+INNER JOIN tblCashierActivity ca ON zcn.SessionID = ca.SessionID
+WHERE zcn.InvoiceDate >= '2026-03-01 02:00:00' AND zcn.InvoiceDate < '2026-03-02 02:00:00'
+  AND ca.SessionDate >= '2026-03-01 02:00:00' AND ca.SessionDate < '2026-03-02 02:00:00';
+
+
+================================================================================
+PURCHASES — BILLS
+================================================================================
+
+Q11: Daily purchase invoices (bills) with totals
+--------------------------------------------------
+SELECT
+    pi.PurchaseInvoiceID, pi.SupplierInvoiceID,
+    pi.InvoiceDate, pi.IsReturn, pi.Posted,
+    ROUND(pi.InvoiceTotal, 2) AS InvoiceTotal,
+    ROUND(pi.Discount, 2) AS Discount,
+    ROUND(pi.TaxAmount, 2) AS TaxAmount,
+    ROUND(pi.NetTotal, 2) AS NetTotal,
+    ROUND(pi.PaidAmount, 2) AS PaidAmount,
+    ROUND(pi.DueAmount, 2) AS DueAmount,
+    pi.Paid, pi.Closed,
+    s.SupplierName
+FROM tblPurchaseInvoice pi
+LEFT JOIN tblSuppliers s ON pi.SupplierID = s.SupplierID
+WHERE CAST(pi.InvoiceDate AS DATE) = '2025-12-27'
+  AND pi.IsReturn = 0 AND pi.Posted = 1
+ORDER BY pi.PurchaseInvoiceID;
+
+
+Q12: Purchase invoice detail lines
+------------------------------------
+SELECT
+    pid.PurchaseInvoiceDetailID, pid.ItemID, pid.ItemName,
+    pid.Quantity, pid.RecivedQuantity,
+    ROUND(pid.UnitPrice, 2) AS UnitPrice,
+    ROUND(pid.SubTotal, 2) AS SubTotal,
+    ROUND(pid.LineDiscount, 2) AS LineDiscount,
+    ROUND(pid.TaxAmount, 2) AS TaxAmount,
+    ROUND(pid.SubNetTotal, 2) AS SubNetTotal,
+    pid.LineStatus
+FROM tblPurchaseInvoiceDetail pid
+WHERE pid.PurchaseInvoiceID = 13367
+ORDER BY pid.PurchaseInvoiceDetailID;
+
+
+Q13: Vendor payments for a purchase invoice
+---------------------------------------------
+SELECT
+    sp.PaymentID, sp.PaymentDate, sp.PaymentMethod,
+    ROUND(sp.PaymentAmount, 2) AS PaymentAmount,
+    sp.CheckNo, sp.CheckDate, sp.PaymentNote, sp.Posted,
+    ROUND(spi.NetAmount, 2) AS NetAmount,
+    spi.SupplierInvoiceID, spi.InvoicePaymentNote
+FROM tblSuppliersPayment sp
+INNER JOIN tblSuppliersPaymentInvoice spi ON sp.PaymentID = spi.PaymentID
+WHERE spi.PurchaseInvoiceID = 9243
+ORDER BY sp.PaymentDate, sp.PaymentID;
+
+
+================================================================================
+PURCHASES — RETURNS (CREDIT NOTES)
+================================================================================
+
+Q14: Daily purchase returns
+-----------------------------
+SELECT
+    pi.PurchaseInvoiceID, pi.SupplierInvoiceID,
+    pi.InvoiceDate, pi.IsReturn, pi.Posted,
+    ROUND(pi.InvoiceTotal, 2) AS InvoiceTotal,
+    ROUND(pi.TaxAmount, 2) AS TaxAmount,
+    ROUND(pi.NetTotal, 2) AS NetTotal,
+    pi.PaidAmount, pi.Paid, pi.Closed,
+    s.SupplierName
+FROM tblPurchaseInvoice pi
+LEFT JOIN tblSuppliers s ON pi.SupplierID = s.SupplierID
+WHERE CAST(pi.InvoiceDate AS DATE) = '2025-12-27'
+  AND pi.IsReturn = 1
+ORDER BY pi.PurchaseInvoiceID;
+
+
+Q15: Purchase return detail lines (negative quantities)
+---------------------------------------------------------
+SELECT
+    pid.PurchaseInvoiceDetailID, pid.ItemID, pid.ItemName,
+    pid.Quantity, pid.UnitPrice,
+    ROUND(pid.SubTotal, 2) AS SubTotal,
+    ROUND(pid.TaxAmount, 2) AS TaxAmount,
+    ROUND(pid.SubNetTotal, 2) AS SubNetTotal
+FROM tblPurchaseInvoiceDetail pid
+WHERE pid.PurchaseInvoiceID = 13367
+ORDER BY pid.PurchaseInvoiceDetailID;
+
+
+================================================================================
+VENDORS & CUSTOMERS
+================================================================================
+
+Q16: Vendors with purchase invoices
+--------------------------------------
+SELECT TOP 20
+    s.SupplierID, s.SupplierName, s.SuppliervatNumber, s.CRNO,
+    s.Phone1, s.Mobile, s.EMailAdress, s.City,
+    COUNT(pi.PurchaseInvoiceID) AS InvoiceCount,
+    ROUND(SUM(pi.NetTotal), 2) AS TotalAmount
+FROM tblSuppliers s
+LEFT JOIN tblPurchaseInvoice pi ON s.SupplierID = pi.SupplierID AND pi.Posted = 1
+GROUP BY s.SupplierID, s.SupplierName, s.SuppliervatNumber, s.CRNO,
+         s.Phone1, s.Mobile, s.EMailAdress, s.City
+ORDER BY InvoiceCount DESC;
+
+
+Q17: Customers with balance
+------------------------------
+SELECT TOP 20
+    c.CustomerID, c.CustomerName, c.CustVatNumber,
+    c.Phone1, c.Mobile, c.EMail, c.City,
+    ROUND(c.CustomerBalance, 2) AS Balance,
+    ROUND(c.CreditLimit, 2) AS CreditLimit,
+    c.CustomerInvoiceCount
+FROM tblCustomers c
+WHERE c.CustomerBalance != 0
+ORDER BY ABS(c.CustomerBalance) DESC;
+
+
+================================================================================
+PRODUCTS
+================================================================================
+
+Q18: Products with prices
+---------------------------
+SELECT TOP 20
+    i.ItemID, i.ItemName, i.EnglishName,
+    iu.BarCode, iu.UnitName,
+    ROUND(iu.PurchasePrice, 2) AS PurchasePrice,
+    ROUND(iu.SellPrice, 2) AS SellPrice,
+    ROUND(iu.CostPrice, 2) AS CostPrice
+FROM tblItems i
+LEFT JOIN tblItemsUnits iu ON i.ItemID = iu.ItemID AND iu.StockUnit = 1
+ORDER BY i.ItemID DESC;
+
+
+================================================================================
+COUNTS & HEALTH CHECK
+================================================================================
+
+Q19: Overall database counts
+-------------------------------
+SELECT 'tblInvoice total' AS metric, COUNT(*) AS cnt FROM tblInvoice
+UNION ALL SELECT 'tblInvoice IsReturned=1', COUNT(*) FROM tblInvoice WHERE IsReturned=1
+UNION ALL SELECT 'tblPurchaseInvoice total', COUNT(*) FROM tblPurchaseInvoice
+UNION ALL SELECT 'tblPurchaseInvoice IsReturn=0 Posted=1', COUNT(*) FROM tblPurchaseInvoice WHERE IsReturn=0 AND Posted=1
+UNION ALL SELECT 'tblPurchaseInvoice IsReturn=1', COUNT(*) FROM tblPurchaseInvoice WHERE IsReturn=1
+UNION ALL SELECT 'tblPurchaseInvoice IsReturn=1 Posted=1', COUNT(*) FROM tblPurchaseInvoice WHERE IsReturn=1 AND Posted=1
+UNION ALL SELECT 'tblCashierActivityReturnAmount', COUNT(*) FROM tblCashierActivityReturnAmount
+UNION ALL SELECT 'tblInvoiceReturnCode', COUNT(*) FROM tblInvoiceReturnCode
+UNION ALL SELECT 'tblZatcaCreditNote', COUNT(*) FROM tblZatcaCreditNote
+UNION ALL SELECT 'tblZatcaCreditNoteDetail', COUNT(*) FROM tblZatcaCreditNoteDetail
+UNION ALL SELECT 'PT5 sessions (PaymentType=5)', COUNT(*) FROM tblCashierActivityDetail WHERE PaymentType=5
+UNION ALL SELECT 'tblItems', COUNT(*) FROM tblItems
+UNION ALL SELECT 'tblSuppliers', COUNT(*) FROM tblSuppliers
+UNION ALL SELECT 'tblCustomers', COUNT(*) FROM tblCustomers
+UNION ALL SELECT 'tblCashierActivity (sessions)', COUNT(*) FROM tblCashierActivity
+UNION ALL SELECT 'tblSuppliersPayment', COUNT(*) FROM tblSuppliersPayment;
+
+
+Q20: Payment methods reference
+---------------------------------
+SELECT PaymentTypeID, PaymentType, IsActive
+FROM tblPaymentType ORDER BY PaymentTypeID;

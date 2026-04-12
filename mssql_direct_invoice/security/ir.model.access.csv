@@ -1,0 +1,6 @@
+id,name,model_id:id,group_id:id,perm_read,perm_write,perm_create,perm_unlink
+access_mssql_direct_sync_user,mssql.direct.sync.user,model_mssql_direct_sync,base.group_user,1,1,1,1
+access_mssql_direct_sync_log_user,mssql.direct.sync.log.user,model_mssql_direct_sync_log,base.group_user,1,1,1,1
+access_mssql_direct_operations_user,mssql.direct.operations.user,model_mssql_direct_operations,base.group_user,1,1,1,1
+access_mssql_direct_sync_queue_user,mssql.direct.sync.queue.user,model_mssql_direct_sync_queue,base.group_user,1,1,1,1
+access_mssql_direct_sync_queue_line_user,mssql.direct.sync.queue.line.user,model_mssql_direct_sync_queue_line,base.group_user,1,1,1,1
