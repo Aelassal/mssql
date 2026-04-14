@@ -1012,7 +1012,7 @@ class MssqlDirectInvoice(models.Model):
         if not sale_journal:
             raise UserError('No sales journal found.')
 
-        # Find original Odoo invoice for linking
+        # Find original Odoo invoice for reversal
         original_odoo_invoice = False
         if original_session_id:
             original_odoo_invoice = self.env['account.move'].search([
@@ -1021,20 +1021,60 @@ class MssqlDirectInvoice(models.Model):
                 ('state', '=', 'posted'),
             ], limit=1)
 
-        # Create credit note
-        cn_vals = {
-            'move_type': 'out_refund',
-            'partner_id': partner.id,
-            'invoice_date': cn_date,
-            'date': cn_date,
-            'ref': ref,
-            'journal_id': sale_journal.id,
-            'invoice_line_ids': cn_line_vals,
-        }
-        if original_odoo_invoice:
-            cn_vals['reversed_entry_id'] = original_odoo_invoice.id
+        credit_note = False
 
-        credit_note = self.env['account.move'].create(cn_vals)
+        # ── Path A: Use account.move.reversal wizard (Odoo's standard) ─
+        if original_odoo_invoice:
+            try:
+                reversal_wizard = self.env['account.move.reversal'].with_context(
+                    active_model='account.move',
+                    active_ids=original_odoo_invoice.ids,
+                ).create({
+                    'reason': f'MSSQL CN {cn_invoice_id}',
+                    'date': cn_date,
+                    'journal_id': original_odoo_invoice.journal_id.id,
+                })
+                reversal_wizard.refund_moves()
+
+                # Find the newly created draft credit note
+                draft_cn = original_odoo_invoice.reversal_move_ids.filtered(
+                    lambda m: m.state == 'draft'
+                )
+                if draft_cn:
+                    credit_note = draft_cn[-1]
+
+                    # Replace auto-generated lines with MSSQL detail
+                    product_lines = credit_note.invoice_line_ids.filtered(
+                        lambda l: l.display_type == 'product'
+                    )
+                    if product_lines:
+                        credit_note.write({'invoice_line_ids': [(2, line.id) for line in product_lines]})
+
+                    credit_note.write({
+                        'invoice_line_ids': cn_line_vals,
+                        'ref': ref,
+                        'invoice_date': cn_date,
+                        'date': cn_date,
+                    })
+            except Exception as e:
+                _logger.warning(
+                    f"refund_moves() failed for CN {cn_invoice_id} on "
+                    f"invoice {original_odoo_invoice.name}: {e}. "
+                    f"Falling back to standalone credit note."
+                )
+                credit_note = False
+
+        # ── Path B: Standalone credit note (orphan, no original invoice) ─
+        if not credit_note:
+            credit_note = self.env['account.move'].create({
+                'move_type': 'out_refund',
+                'partner_id': partner.id,
+                'invoice_date': cn_date,
+                'date': cn_date,
+                'ref': ref,
+                'journal_id': sale_journal.id,
+                'invoice_line_ids': cn_line_vals,
+            })
 
         # Decimal adjustment
         mssql_net_total = round(abs(net_total), 2)
@@ -1078,7 +1118,8 @@ class MssqlDirectInvoice(models.Model):
             except Exception as e:
                 _logger.warning(f"Failed to reconcile CN {credit_note.name}: {e}")
 
-        _logger.info(f"Credit Note {cn_invoice_id}: {credit_note.name} created (amount: {credit_note.amount_total})")
+        method = 'reversal' if original_odoo_invoice else 'standalone'
+        _logger.info(f"Credit Note {cn_invoice_id}: {credit_note.name} created via {method} (amount: {credit_note.amount_total})")
         return {'model': 'account.move', 'id': credit_note.id}
 
     # ── Credit Note SQL Queries ───────────────────────────────────────
