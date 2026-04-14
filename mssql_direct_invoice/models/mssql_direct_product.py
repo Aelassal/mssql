@@ -40,7 +40,7 @@ class MssqlDirectProduct(models.Model):
             sql_products = unique_products
             product_obj = self.env['product.product']
 
-            item_ids = [item['ItemID'] for item in sql_products if item['ItemID']]
+            item_ids = [str(item['ItemID']) for item in sql_products if item['ItemID']]
             existing_products = {
                 p.x_sql_item_id: p for p in product_obj.search([('x_sql_item_id', 'in', item_ids)])
             }
@@ -52,6 +52,7 @@ class MssqlDirectProduct(models.Model):
                 item_id = item['ItemID']
                 if not item_id:
                     continue
+                item_id = str(item_id)
 
                 name = item['ItemName'] or item['EnglishName'] or f"Item {item_id}"
                 vals = {
@@ -59,7 +60,6 @@ class MssqlDirectProduct(models.Model):
                     'x_sql_item_id': item_id,
                     'x_english_name': item['EnglishName'],
                     'type': 'consu',
-                    'is_storable': True,
                 }
 
                 if item.get('PurchasePrice') is not None:
@@ -79,12 +79,19 @@ class MssqlDirectProduct(models.Model):
             created = 0
             if to_create:
                 _logger.info(f"Creating {len(to_create)} new products in batches...")
-                batch_size = 1000
+                batch_size = 2000
+                fast_create = product_obj.with_context(
+                    tracking_disable=True,
+                    mail_create_nolog=True,
+                    mail_create_nosubscribe=True,
+                    mail_notrack=True,
+                )
                 for i in range(0, len(to_create), batch_size):
                     batch = to_create[i:i + batch_size]
-                    product_obj.create(batch)
+                    fast_create.create(batch)
                     created += len(batch)
                     _logger.info(f"Product creation progress: {created}/{len(to_create)}")
+                    self.env.cr.commit()
                     self.env.clear()
 
             if created > 0:
@@ -119,7 +126,7 @@ class MssqlDirectProduct(models.Model):
                 raise UserError('No product data found in SQL Server')
 
             product_obj = self.env['product.product']
-            item_ids = [item['ItemID'] for item in price_data if item['ItemID']]
+            item_ids = [str(item['ItemID']) for item in price_data if item['ItemID']]
             existing_products = {
                 p.x_sql_item_id: p for p in product_obj.search([('x_sql_item_id', 'in', item_ids)])
             }
@@ -127,7 +134,10 @@ class MssqlDirectProduct(models.Model):
             product_updates = {}
             for item in price_data:
                 item_id = item['ItemID']
-                if not item_id or item_id not in existing_products:
+                if not item_id:
+                    continue
+                item_id = str(item_id)
+                if item_id not in existing_products:
                     continue
 
                 product = existing_products[item_id]

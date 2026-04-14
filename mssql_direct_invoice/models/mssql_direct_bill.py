@@ -161,12 +161,9 @@ class MssqlDirectBill(models.Model):
 
         # Coerce numeric fields
         for line in invoice_lines:
-            for key in ('ItemID',):
-                if key in line and line[key] is not None:
-                    try:
-                        line[key] = int(line[key])
-                    except (ValueError, TypeError):
-                        pass
+            # Keep ItemID as string (Char field on product.product)
+            if line.get('ItemID') is not None:
+                line['ItemID'] = str(line['ItemID'])
             for key in ('Quantity', 'UnitPrice', 'LineDiscount', 'SubTotal',
                         'SubNetTotal', 'CostPrice', 'LineTax',
                         'RecivedQuantity'):
@@ -229,7 +226,6 @@ class MssqlDirectBill(models.Model):
                     'name': line['ItemName'] or line['EnglishName'] or f"Item {item_id}",
                     'x_sql_item_id': item_id,
                     'type': 'consu',
-                    'is_storable': True,
                 })
                 products[item_id] = product
 

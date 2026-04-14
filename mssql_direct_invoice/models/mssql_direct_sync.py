@@ -246,12 +246,20 @@ class MssqlDirectSync(models.Model):
         created = 0
         if to_create:
             _logger.info(f"Creating {len(to_create)} new {partner_type}s in batches...")
-            batch_size = 1000
+            batch_size = 2000
+            fast_create = partner_obj.with_context(
+                tracking_disable=True,
+                mail_create_nolog=True,
+                mail_create_nosubscribe=True,
+                mail_notrack=True,
+                no_vat_validation=True,
+            )
             for i in range(0, len(to_create), batch_size):
                 batch = to_create[i:i + batch_size]
-                partner_obj.create(batch)
+                fast_create.create(batch)
                 created += len(batch)
                 _logger.info(f"{partner_type.title()} creation progress: {created}/{len(to_create)}")
+                self.env.cr.commit()
                 self.env.clear()
 
         updated = 0

@@ -217,11 +217,9 @@ class MssqlDirectInvoice(models.Model):
                         'SubTotal', 'Quantity', 'UnitPrice'):
                 if key in line:
                     line[key] = self._coerce_numeric(line[key])
+            # Keep ItemID as string (Char field on product.product)
             if line.get('ItemID') is not None:
-                try:
-                    line['ItemID'] = int(line['ItemID'])
-                except (ValueError, TypeError):
-                    pass
+                line['ItemID'] = str(line['ItemID'])
 
         # Coerce numeric fields in payments
         for pay in session_payments:
@@ -248,7 +246,9 @@ class MssqlDirectInvoice(models.Model):
         for line in session_lines:
             item_id = line['ItemID']
             if item_id:
-                all_item_ids.add(int(item_id))
+                item_id = str(item_id)
+                line['ItemID'] = item_id
+                all_item_ids.add(item_id)
                 if item_id not in item_info:
                     item_info[item_id] = {
                         'name': line.get('ItemName') or line.get('EnglishName') or f"Item {item_id}",
@@ -267,7 +267,6 @@ class MssqlDirectInvoice(models.Model):
                 'name': item_info[iid]['name'],
                 'x_sql_item_id': iid,
                 'type': 'consu',
-                'is_storable': True,
             } for iid in missing])
             for p in new_prods:
                 existing_products[p.x_sql_item_id] = p
@@ -929,11 +928,9 @@ class MssqlDirectInvoice(models.Model):
             for k in ('Quantity', 'UnitPrice', 'SubTotal', 'TaxAmount', 'TaxPercent'):
                 if k in dl:
                     dl[k] = self._coerce_numeric(dl.get(k)) or 0
+            # Keep ItemID as string (Char field on product.product)
             if dl.get('ItemID') is not None:
-                try:
-                    dl['ItemID'] = int(dl['ItemID'])
-                except (ValueError, TypeError):
-                    pass
+                dl['ItemID'] = str(dl['ItemID'])
 
         # Get/create partner (use generic cash customer)
         partner_obj = self.env['res.partner']
@@ -965,7 +962,7 @@ class MssqlDirectInvoice(models.Model):
             all_item_ids = set()
             for dl in detail_lines:
                 if dl.get('ItemID'):
-                    all_item_ids.add(int(dl['ItemID']))
+                    all_item_ids.add(str(dl['ItemID']))
 
             cn_products = {}
             if all_item_ids:
@@ -978,14 +975,13 @@ class MssqlDirectInvoice(models.Model):
                         'name': dl.get('ItemName') or f"Item {iid}",
                         'x_sql_item_id': iid,
                         'type': 'consu',
-                        'is_storable': True,
-                    } for iid in missing for dl in detail_lines if dl.get('ItemID') and int(dl['ItemID']) == iid][:len(missing)])
+                    } for iid in missing for dl in detail_lines if dl.get('ItemID') and str(dl['ItemID']) == iid][:len(missing)])
                     for p in new_prods:
                         cn_products[p.x_sql_item_id] = p
 
             for dl in detail_lines:
-                item_id = dl.get('ItemID')
-                product = cn_products.get(int(item_id)) if item_id else return_product
+                item_id = str(dl.get('ItemID')) if dl.get('ItemID') else None
+                product = cn_products.get(item_id) if item_id else return_product
                 if not product:
                     product = return_product
 
