@@ -7,6 +7,7 @@
     "data": [
         "security/ir.model.access.csv",
         "data/ir_sequence_data.xml",
+        "data/ir_cron_data.xml",
         "views/mssql_direct_sync_views.xml",
         "views/mssql_direct_sync_queue_views.xml",
         "views/mssql_direct_operations_views.xml",

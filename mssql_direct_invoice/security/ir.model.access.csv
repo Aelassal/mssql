@@ -4,3 +4,4 @@ access_mssql_direct_sync_log_user,mssql.direct.sync.log.user,model_mssql_direct_
 access_mssql_direct_operations_user,mssql.direct.operations.user,model_mssql_direct_operations,base.group_user,1,1,1,1
 access_mssql_direct_sync_queue_user,mssql.direct.sync.queue.user,model_mssql_direct_sync_queue,base.group_user,1,1,1,1
 access_mssql_direct_sync_queue_line_user,mssql.direct.sync.queue.line.user,model_mssql_direct_sync_queue_line,base.group_user,1,1,1,1
+access_mssql_direct_payment_method_user,mssql.direct.payment.method.user,model_mssql_direct_payment_method,base.group_user,1,1,1,1

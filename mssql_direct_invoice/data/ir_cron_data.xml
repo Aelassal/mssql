@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <data noupdate="1">
+        <record id="cron_mssql_direct_daily_sync" model="ir.cron">
+            <field name="name">MSSQL Direct Sync: Daily (yesterday's sales + bills + CNs)</field>
+            <field name="model_id" ref="model_mssql_direct_sync"/>
+            <field name="state">code</field>
+            <field name="code">model.cron_daily_sync()</field>
+            <field name="interval_number">1</field>
+            <field name="interval_type">days</field>
+
+            <field name="active" eval="False"/>
+        </record>
+
+        <record id="cron_mssql_direct_process_queues" model="ir.cron">
+            <field name="name">MSSQL Direct Sync: Retry Failed Queues</field>
+            <field name="model_id" ref="model_mssql_direct_sync_queue"/>
+            <field name="state">code</field>
+            <field name="code">model.cron_process_sync_queues()</field>
+            <field name="interval_number">30</field>
+            <field name="interval_type">minutes</field>
+
+            <field name="active" eval="False"/>
+        </record>
+    </data>
+</odoo>

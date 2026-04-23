@@ -1,5 +1,6 @@
 # Base model FIRST, then inheriting domain files
 from . import mssql_direct_sync
+from . import mssql_direct_payment_method
 from . import mssql_direct_partner
 from . import mssql_direct_product
 from . import mssql_direct_invoice

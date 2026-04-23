@@ -17,6 +17,11 @@
                             invisible="not products_fetched"/>
                     <button name="action_create_invoice" string="Create Sales Invoices" type="object" class="btn-primary"/>
                     <button name="sync_purchase_invoices" string="Create Vendor Bills" type="object" class="btn-primary"/>
+                    <button name="action_repair_backfills"
+                            string="Repair Legacy Backfills"
+                            type="object" class="btn-warning"
+                            icon="fa-wrench"
+                            confirm="Cancel all MSSQL-INV-* backfill invoices and redirect their CNs to session aggregates. Run this once after upgrading to the strict-CN version."/>
                 </header>
                 <sheet>
                     <group>
@@ -39,34 +44,58 @@
                     </group>
 
                     <notebook>
-                        <page string="Payment Method Journal Mapping" name="payment_journal_mapping">
-                            <group>
-                                <group string="Cash Payment Methods">
-                                    <field name="payment_method_cash_journal_id"
+                        <page string="Sales Payment Methods" name="sales_payment_methods">
+                            <div class="oe_button_box" name="sales_pm_buttons">
+                                <button name="action_fetch_sales_payment_methods"
+                                        type="object"
+                                        string="Fetch Sales Payment Methods"
+                                        class="btn-primary"
+                                        icon="fa-download"/>
+                            </div>
+                            <field name="sales_payment_method_ids" nolabel="1"
+                                   context="{'default_scope': 'sales', 'default_sync_config_id': id}">
+                                <list editable="bottom">
+                                    <field name="mssql_code" readonly="1"/>
+                                    <field name="name"/>
+                                    <field name="journal_id"
                                            options="{'no_create': True, 'no_open': True}"/>
-                                    <field name="payment_method_coupon_journal_id"
-                                           options="{'no_create': True, 'no_open': True}"/>
-                                    <field name="payment_method_points_journal_id"
-                                           options="{'no_create': True, 'no_open': True}"/>
-                                </group>
-                                <group string="Bank/Card Payment Methods">
-                                    <field name="payment_method_mada_journal_id"
-                                           options="{'no_create': True, 'no_open': True}"/>
-                                    <field name="payment_method_visa_journal_id"
-                                           options="{'no_create': True, 'no_open': True}"/>
-                                    <field name="payment_method_mastercard_journal_id"
-                                           options="{'no_create': True, 'no_open': True}"/>
-                                    <field name="payment_method_stcpay_journal_id"
-                                           options="{'no_create': True, 'no_open': True}"/>
-                                    <field name="payment_method_onaccount_journal_id"
-                                           options="{'no_create': True, 'no_open': True}"/>
-                                    <field name="payment_method_banktransfer_journal_id"
-                                           options="{'no_create': True, 'no_open': True}"/>
-                                </group>
-                            </group>
+                                    <field name="scope" column_invisible="1"/>
+                                </list>
+                            </field>
                             <div class="alert alert-info" role="alert" style="margin: 10px;">
-                                <strong>Optional Configuration:</strong> Map payment methods to specific journals.
-                                If not configured, payments will use default cash/bank journals.
+                                <strong>How it works:</strong> Hit
+                                <em>Fetch Sales Payment Methods</em> to pull every
+                                PaymentType from MSSQL (<code>tblPaymentType</code> +
+                                any orphan codes in <code>tblCashierActivityDetail</code>),
+                                then assign a journal to each. Any payment whose code
+                                isn't mapped will cause the queue line to fail with a
+                                clear error. PT5 (return voucher) is intentionally
+                                excluded — it's reconciled via credit notes.
+                            </div>
+                        </page>
+                        <page string="Purchase Payment Methods" name="purchase_payment_methods">
+                            <div class="oe_button_box" name="purchase_pm_buttons">
+                                <button name="action_fetch_purchase_payment_methods"
+                                        type="object"
+                                        string="Fetch Purchase Payment Methods"
+                                        class="btn-primary"
+                                        icon="fa-download"/>
+                            </div>
+                            <field name="purchase_payment_method_ids" nolabel="1"
+                                   context="{'default_scope': 'purchase', 'default_sync_config_id': id}">
+                                <list editable="bottom">
+                                    <field name="mssql_code" readonly="1"/>
+                                    <field name="name"/>
+                                    <field name="journal_id"
+                                           options="{'no_create': True, 'no_open': True}"/>
+                                    <field name="scope" column_invisible="1"/>
+                                </list>
+                            </field>
+                            <div class="alert alert-info" role="alert" style="margin: 10px;">
+                                <strong>How it works:</strong> Distinct
+                                <code>PaymentMethod</code> values from
+                                <code>tblSuppliersPayment</code>. Unmapped methods
+                                cause vendor-bill queue lines to fail.
                             </div>
                         </page>
                     </notebook>

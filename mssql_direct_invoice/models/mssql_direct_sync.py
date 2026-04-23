@@ -1,9 +1,12 @@
-from odoo import models, fields
+from odoo import models, fields, api
 from odoo.exceptions import UserError
+from datetime import date as date_type, timedelta
 import pymssql
 import logging
 
 _logger = logging.getLogger(__name__)
+
+CASH_CUSTOMER_NAME = 'عميل نقدي'  # عميل نقدي
 
 
 class MssqlDirectSync(models.Model):
@@ -73,39 +76,141 @@ class MssqlDirectSync(models.Model):
             }
         }
 
-    # ── Shared Product Helpers ────────────────────────────────────────
+    # ── Aggregate Line Products ───────────────────────────────────────
 
-    def _get_or_create_decimal_product(self):
-        """Get or create a 'Decimal' product for handling rounding adjustments"""
+    def _get_or_create_aggregate_product(self, name):
+        """Get or create a service product used as a single aggregate line."""
         product = self.env['product.product'].search([
-            ('name', '=', 'Decimal'),
+            ('name', '=', name),
             ('type', '=', 'service'),
         ], limit=1)
-
         if not product:
             product = self.env['product.product'].create({
-                'name': 'Decimal',
+                'name': name,
                 'type': 'service',
             })
-            _logger.info(f"Created 'Decimal' product with ID {product.id}")
-
+            _logger.info(f"Created aggregate product '{name}' with ID {product.id}")
         return product
 
-    def _get_or_create_return_product(self):
-        """Get or create a 'Return' service product for credit note fallback lines"""
-        product = self.env['product.product'].search([
-            ('name', '=', 'Return'),
-            ('type', '=', 'service'),
+    def _get_or_create_pos_sales_product(self):
+        return self._get_or_create_aggregate_product('POS Sales')
+
+    def _get_or_create_pos_return_product(self):
+        return self._get_or_create_aggregate_product('POS Return')
+
+    def _get_or_create_pos_purchase_product(self):
+        return self._get_or_create_aggregate_product('POS Purchase')
+
+    # ── Tax (price-included 15%) ──────────────────────────────────────
+
+    def _get_or_create_vat_15_inclusive(self, type_tax_use):
+        """Fetch or create a price-included VAT 15% tax.
+
+        Kept separate from the standard price-excluded VAT 15% so existing
+        flows are not affected. Using price_include=True means price_unit
+        equals the tax-inclusive MSSQL NetTotal exactly and Odoo splits it
+        into untaxed + tax internally, so amount_total = NetTotal to the cent.
+        """
+        assert type_tax_use in ('sale', 'purchase'), f"Bad type_tax_use {type_tax_use!r}"
+        name = f"VAT 15% Incl ({type_tax_use})"
+        company = self.env.company
+        tax = self.env['account.tax'].search([
+            ('name', '=', name),
+            ('type_tax_use', '=', type_tax_use),
+            ('company_id', '=', company.id),
         ], limit=1)
+        if not tax:
+            vals = {
+                'name': name,
+                'amount': 15.0,
+                'amount_type': 'percent',
+                'type_tax_use': type_tax_use,
+                'price_include': True,
+                'company_id': company.id,
+            }
+            # Odoo 18 renamed the flag to `price_include_override`; keep both
+            # assignments so the tax works regardless of which version the
+            # running instance exposes.
+            if 'price_include_override' in self.env['account.tax']._fields:
+                vals['price_include_override'] = 'tax_included'
+            tax = self.env['account.tax'].create(vals)
+            _logger.info(f"Created tax {name} (id={tax.id})")
+        return tax
 
-        if not product:
-            product = self.env['product.product'].create({
-                'name': 'Return',
-                'type': 'service',
+    # ── Partner + guard helpers ───────────────────────────────────────
+
+    def _get_cash_customer_partner(self):
+        """Get or create the generic POS cash customer (عميل نقدي)."""
+        partner = self.env['res.partner'].search(
+            [('name', '=', CASH_CUSTOMER_NAME)], limit=1)
+        if not partner:
+            partner = self.env['res.partner'].create({
+                'name': CASH_CUSTOMER_NAME,
+                'customer_rank': 1,
             })
-            _logger.info(f"Created 'Return' product with ID {product.id}")
+        return partner
 
-        return product
+    @staticmethod
+    def _parse_mssql_date(raw):
+        """Coerce MSSQL-provided date/datetime/str into a python date."""
+        if raw is None:
+            return False
+        if isinstance(raw, str):
+            return date_type.fromisoformat(raw[:10])
+        if hasattr(raw, 'date'):
+            return raw.date()
+        return raw
+
+    # ── Daily automatic sync ──────────────────────────────────────────
+
+    @api.model
+    def cron_daily_sync(self):
+        """Cron entry point: sync yesterday's sales + purchases for every
+        configured connection. Failures on one config don't block the others.
+
+        `create_session_based_invoices` auto-chains to `create_sales_credit_notes`
+        for the same date, so this call covers sessions + CNs + purchase bills
+        in one pass.
+        """
+        target_date = fields.Date.today() - timedelta(days=1)
+        configs = self.env['mssql.direct.sync'].search([])
+        if not configs:
+            _logger.info("cron_daily_sync: no sync configurations, skipping")
+            return
+
+        for config in configs:
+            _logger.info(
+                f"cron_daily_sync: running {config.name} for {target_date}")
+            try:
+                config.create_session_based_invoices(target_date)
+            except Exception as e:
+                _logger.error(
+                    f"cron_daily_sync[{config.name}] sales sync failed "
+                    f"for {target_date}: {e}")
+            try:
+                config.with_context(
+                    purchase_invoice_date=target_date
+                ).write({'purchase_invoice_date': target_date})
+                config.sync_purchase_invoices()
+            except Exception as e:
+                _logger.error(
+                    f"cron_daily_sync[{config.name}] purchase sync failed "
+                    f"for {target_date}: {e}")
+
+    @staticmethod
+    def _assert_total_matches(move, mssql_total, label, tolerance=0.01):
+        """Raise UserError if move.amount_total drifts from the MSSQL target.
+
+        The aggregate-line design means any drift is a bug (either tax setup
+        or MSSQL data issue), not sub-cent rounding noise — so we fail the
+        queue line loudly instead of silently plugging with a decimal line.
+        """
+        diff = round(float(move.amount_total) - float(mssql_total), 2)
+        if abs(diff) >= tolerance:
+            raise UserError(
+                f"{label}: Odoo amount_total={move.amount_total} does not match "
+                f"MSSQL NetTotal={mssql_total} (diff={diff}). Aborting."
+            )
 
     # ── Sync Log Helpers ──────────────────────────────────────────────
 
