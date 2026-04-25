@@ -305,6 +305,19 @@ class MssqlDirectSync(models.Model):
                 odoo_id_field: record_id,
                 rank_field: 1,
             }
+            # POS suppliers are business entities (VAT/CR/registered address) so
+            # always come in as companies. Customers default to person; promote
+            # to company only when the row carries business identifiers (VAT
+            # or CR number — typical of B2B clients).
+            if partner_type == 'supplier':
+                vals['company_type'] = 'company'
+            else:
+                cust_vat_field = field_mapping.get('vat')
+                cust_cr_field = field_mapping.get('company_registry')
+                has_vat = cust_vat_field and record.get(cust_vat_field)
+                has_cr = cust_cr_field and record.get(cust_cr_field)
+                if has_vat or has_cr:
+                    vals['company_type'] = 'company'
 
             for odoo_field, sql_field in field_mapping.items():
                 if odoo_field == 'name':

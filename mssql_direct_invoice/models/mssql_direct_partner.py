@@ -11,7 +11,28 @@ class MssqlDirectPartner(models.Model):
     # ── Vendor / Customer Sync ──────────────────────────────────────────
 
     def sync_vendors(self):
-        """Fetch vendors from SQL Server and create in Odoo"""
+        """Fetch vendors from SQL Server and create in Odoo.
+
+        Also performs a one-shot legacy heal at the top: any previously-synced
+        vendor still flagged as an individual (is_company=False) is promoted
+        to company. Suppliers in POS data are business entities — earlier
+        versions of this module didn't set company_type at create time, so
+        existing records need this corrective pass.
+        """
+        # ── Heal legacy vendors created before company_type was set ───────
+        legacy_individual_vendors = self.env['res.partner'].search([
+            ('x_sql_vendor_id', '!=', False),
+            ('supplier_rank', '>', 0),
+            ('is_company', '=', False),
+        ])
+        legacy_fixed = 0
+        if legacy_individual_vendors:
+            legacy_individual_vendors.write({'company_type': 'company'})
+            legacy_fixed = len(legacy_individual_vendors)
+            _logger.info(
+                f"sync_vendors: healed {legacy_fixed} legacy vendor(s) "
+                f"from individual → company")
+
         conn = self._get_connection()
         cursor = conn.cursor(as_dict=True)
 
@@ -21,7 +42,10 @@ class MssqlDirectPartner(models.Model):
 
             if not sql_vendors:
                 _logger.info('No vendors found in SQL Server')
-                return self._success_notification('Vendor Sync Complete', 'No vendors found')
+                msg = 'No vendors found'
+                if legacy_fixed:
+                    msg += f' (healed {legacy_fixed} legacy individual → company)'
+                return self._success_notification('Vendor Sync Complete', msg)
 
             field_mapping = {
                 'name': 'SupplierName',
@@ -51,10 +75,17 @@ class MssqlDirectPartner(models.Model):
             if created > 0:
                 self.write({'vendors_fetched': True})
 
+            heal_note = f' Healed {legacy_fixed} legacy individual → company.' if legacy_fixed else ''
             if created == 0:
-                return self._success_notification('Vendor Sync Complete', f'No new vendors found (checked: {len(sql_vendors)} vendors, {skipped} already exist)')
-            else:
-                return self._success_notification('Vendor Sync Complete', f'Created: {created} new vendors ({skipped} already existed)')
+                return self._success_notification(
+                    'Vendor Sync Complete',
+                    f'No new vendors found (checked: {len(sql_vendors)} vendors, '
+                    f'{skipped} already exist).{heal_note}'
+                )
+            return self._success_notification(
+                'Vendor Sync Complete',
+                f'Created: {created} new vendors ({skipped} already existed).{heal_note}'
+            )
         except Exception as e:
             try:
                 conn.close()
