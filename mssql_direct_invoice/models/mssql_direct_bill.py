@@ -190,12 +190,21 @@ class MssqlDirectBill(models.Model):
             raise UserError(
                 f"PI {invoice_id}: NetTotal {net_total} is not positive — nothing to import.")
 
+        # Date semantics for late-posted bills:
+        # - invoice_date  → MSSQL InvoiceDate  (legal vendor invoice date)
+        # - invoice_date_due → MSSQL InvoiceDueDate (vendor's due date)
+        # - date (accounting period) → MSSQL PostedDate when available, else
+        #   InvoiceDate. Booking a March bill posted in April under "April"
+        #   keeps closed periods clean and matches Odoo's late-entry convention.
         inv_date = purchase_invoice['InvoiceDate']
         if isinstance(inv_date, str):
             inv_date = inv_date[:10]
         inv_due_date = purchase_invoice.get('InvoiceDueDate') or inv_date
         if isinstance(inv_due_date, str):
             inv_due_date = inv_due_date[:10]
+        accounting_date = purchase_invoice.get('PostedDate') or inv_date
+        if isinstance(accounting_date, str):
+            accounting_date = accounting_date[:10]
 
         tax = self._get_or_create_vat_15_inclusive('purchase')
         product = self._get_or_create_pos_purchase_product()
@@ -212,7 +221,7 @@ class MssqlDirectBill(models.Model):
             'partner_id': vendor.id,
             'invoice_date': inv_date,
             'invoice_date_due': inv_due_date,
-            'date': inv_date,
+            'date': accounting_date,
             'ref': ref,
             'narration': purchase_invoice.get('InvoiceNote', '') or '',
             'journal_id': purchase_journal.id,
@@ -348,6 +357,12 @@ class MssqlDirectBill(models.Model):
     # ── SQL Queries ───────────────────────────────────────────────────
 
     def _query_purchase_invoices(self, cursor, date_str, next_date):
+        # Filter by COALESCE(PostedDate, InvoiceDate): a bill posted yesterday
+        # with an old InvoiceDate (~75% of bills in this DB are posted >7 days
+        # after their invoice date) needs to be picked up the day after it
+        # gets posted. PostedDate is NULL on ~4.5% of rows, so we fall back
+        # to InvoiceDate to avoid losing them.
+        #
         # ROUND() in T-SQL uses half-away-from-zero (e.g. 5820.035 → 5820.04),
         # which matches SA accounting conventions. Doing it server-side avoids
         # Python float precision loss on money(19,4) values like x.xx5.
@@ -374,10 +389,10 @@ class MssqlDirectBill(models.Model):
                 s.SupplierName
             FROM [dbo].[tblPurchaseInvoice] pi
             LEFT JOIN [dbo].[tblSuppliers] s ON pi.SupplierID = s.SupplierID
-            WHERE pi.InvoiceDate >= %s
-               AND pi.InvoiceDate < %s
+            WHERE COALESCE(pi.PostedDate, pi.InvoiceDate) >= %s
+               AND COALESCE(pi.PostedDate, pi.InvoiceDate) < %s
                AND pi.Posted = 1
-            ORDER BY pi.InvoiceDate DESC, pi.PurchaseInvoiceID
+            ORDER BY pi.PostedDate DESC, pi.InvoiceDate DESC, pi.PurchaseInvoiceID
         """, (date_str, next_date))
         return cursor.fetchall()
 
