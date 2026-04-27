@@ -253,6 +253,19 @@ class MssqlDirectInvoice(models.Model):
             all_payments = self._query_all_session_payments(cursor, session_ids)
             all_credit_sales = self._query_all_session_credit_sales(cursor, session_ids)
             all_invoice_ranges = self._query_all_session_invoice_ranges(cursor, session_ids)
+            all_on_account = self._query_all_session_on_account_invoices(cursor, session_ids)
+
+            # Just-in-time customer sync for any on-account customer not yet
+            # in Odoo. Done while the cursor is still open so we can fetch
+            # only the rows we need from tblCustomers.
+            needed_customer_ids = sorted({
+                inv['CustomerID']
+                for invs in all_on_account.values()
+                for inv in invs
+                if inv.get('CustomerID')
+            })
+            if needed_customer_ids:
+                self._ensure_customers_exist(cursor, needed_customer_ids)
 
             conn.close()
             _logger.info("MSSQL fetch done, connection closed.")
@@ -286,6 +299,7 @@ class MssqlDirectInvoice(models.Model):
                     'credit_sales': all_credit_sales.get(session_id, {}),
                     'payments': [dict(p) for p in all_payments.get(session_id, [])],
                     'invoice_range': all_invoice_ranges.get(session_id, {}),
+                    'on_account_invoices': all_on_account.get(session_id, []),
                 }, default=str)
 
                 cashier_name = session['CashierName'] or f"Cashier {session['EmployeeID']}"
@@ -346,23 +360,28 @@ class MssqlDirectInvoice(models.Model):
         return val
 
     def _process_queue_sales_invoice(self, data, queue_line):
-        """Build one aggregate out_invoice per session whose total == MSSQL NetTotal.
+        """Build the session aggregate (cash + cards portion) and per-customer
+        on-account out_invoices.
 
-        Line fidelity is explicitly traded for exact total matching: a single
-        'POS Sales' line at price_unit=NetTotal with a price-included 15% VAT
-        collapses to amount_total=NetTotal to the cent. If it doesn't, we
-        abort — the queue surfaces the diff.
+        - Aggregate amount = NetTotal − SUM(pure-on-account CreditAmount).
+        - PT6 already excluded from session_payments at the SQL level.
+        - Each pure-on-account invoice (CreditAmount > 0 and all other payment
+          columns = 0) becomes its own out_invoice with ref MSSQL-INV-{id},
+          partnered to the real MSSQL customer (or عميل نقدي if CustomerID is
+          missing). No payment registered — stays open as customer AR.
         """
         session = data['session']
         session_payments = data.get('payments', [])
         invoice_range = data.get('invoice_range', {})
         credit_sales = data.get('credit_sales', {})
+        on_account_invoices = data.get('on_account_invoices', [])
 
         session_id = session['SessionID']
         cashier_name = session.get('CashierName') or f"Cashier {session.get('EmployeeID', '?')}"
         net_total = round(float(self._coerce_numeric(session['NetTotal']) or 0), 2)
 
-        # Duplicate guard
+        # Duplicate guard — for the session aggregate. Per-invoice on-account
+        # moves get their own MSSQL-INV-{id} dedup further below.
         existing_inv = self.env['account.move'].search([
             ('ref', '=like', f"Session {session_id} -%"),
             ('move_type', '=', 'out_invoice'),
@@ -385,13 +404,19 @@ class MssqlDirectInvoice(models.Model):
                 if key in pay:
                     pay[key] = self._coerce_numeric(pay[key])
 
-        # Credit sales total (expected residual after payments)
+        # Credit sales narration (informational — separate from on-account)
         credit_amount = round(self._coerce_numeric(credit_sales.get('total')) or 0, 2)
 
-        # Tax + product + journal + partner
+        # Compute on-account split
+        on_account_total = round(sum(
+            float(inv.get('CreditAmount') or 0) for inv in on_account_invoices
+        ), 2)
+        aggregate_amount = round(net_total - on_account_total, 2)
+
+        # Tax + product + journal + cash partner
         tax = self._get_or_create_vat_15_inclusive('sale')
         product = self._get_or_create_pos_sales_product()
-        partner = self._get_cash_customer_partner()
+        cash_partner = self._get_cash_customer_partner()
         sale_journal = self.env['account.journal'].search([
             ('type', '=', 'sale'),
             ('company_id', '=', self.env.company.id),
@@ -399,14 +424,38 @@ class MssqlDirectInvoice(models.Model):
         if not sale_journal:
             raise UserError('No sales journal found.')
 
-        # Ref
+        # ── Per-customer on-account invoices ─────────────────────────────
+        on_account_moves = self._create_on_account_moves(
+            on_account_invoices, cash_partner, tax, product, sale_journal, session_id)
+
+        # ── Session aggregate (cash + cards + STC + ...) ─────────────────
+        # If aggregate_amount is 0, the session was purely on-account: skip
+        # the aggregate move entirely. The on-account moves above are enough.
+        if aggregate_amount <= 0:
+            if not on_account_moves:
+                # Nothing to import — defensive
+                raise UserError(
+                    f"Session {session_id}: aggregate_amount={aggregate_amount} "
+                    f"with no on-account invoices either. Data anomaly."
+                )
+            _logger.info(
+                f"Session {session_id}: purely on-account session — "
+                f"created {len(on_account_moves)} per-customer invoice(s), "
+                f"skipping aggregate.")
+            return {
+                'model': 'account.move',
+                'id': on_account_moves[0].id,
+                'extras': {'on_account_count': len(on_account_moves)},
+            }
+
+        # Ref for the session aggregate
         min_inv = invoice_range.get('MinInvoiceID', '')
         max_inv = invoice_range.get('MaxInvoiceID', '')
         ref_text = f"Session {session_id} - {cashier_name} - invs {min_inv} to {max_inv}"
 
         invoice = self.env['account.move'].create({
             'move_type': 'out_invoice',
-            'partner_id': partner.id,
+            'partner_id': cash_partner.id,
             'invoice_date': session_date,
             'date': session_date,
             'ref': ref_text,
@@ -414,20 +463,20 @@ class MssqlDirectInvoice(models.Model):
             'invoice_line_ids': [(0, 0, {
                 'product_id': product.id,
                 'quantity': 1,
-                'price_unit': net_total,
+                'price_unit': aggregate_amount,
                 'name': f'POS Sales - Session {session_id}',
                 'tax_ids': [(6, 0, [tax.id])],
             })],
         })
 
-        self._assert_total_matches(invoice, net_total, f"Session {session_id}")
+        self._assert_total_matches(invoice, aggregate_amount, f"Session {session_id}")
 
         if credit_amount > 0:
             invoice.write({'narration': self._build_credit_sales_narration(credit_sales)})
 
         invoice.action_post()
 
-        # ── Payments (PT5 intentionally excluded at the SQL level — see R8)
+        # ── Payments (PT5 + PT6 excluded at SQL level)
         self._register_customer_payments(
             invoice, session_payments, session_date, session_id)
 
@@ -440,14 +489,15 @@ class MssqlDirectInvoice(models.Model):
 
         # Post-step: sweep any existing Odoo CNs that were redeemed INTO this
         # session's invoice range and reconcile them against this session's AR.
-        # Handles the cross-day case where a CN was created earlier (Used=0 at
-        # that time) and later got redeemed against an invoice in this session.
         try:
             self._sweep_session_cn_redemptions(invoice, session_id)
         except Exception as e:
             _logger.warning(f"Session {session_id}: CN redemption sweep failed: {e}")
 
-        # Residual sanity check — catches silent payment-registration failures.
+        # Residual sanity check.
+        # Expected = aggregate_amount − sum(non-PT5/6 payments).
+        # Drift > 0 means a payment silently failed; drift < 0 means the
+        # CN-redemption sweep absorbed PT5 into fully-paid state (fine).
         invoice = self.env['account.move'].browse(invoice.id)
         actual_residual = round(invoice.amount_residual, 2)
         intended_registered = round(sum(
@@ -455,22 +505,106 @@ class MssqlDirectInvoice(models.Model):
             for p in session_payments
             if self._payment_pcamount(p) > 0
         ), 2)
-        expected_residual = round(net_total - intended_registered, 2)
+        expected_residual = round(aggregate_amount - intended_registered, 2)
         drift = round(actual_residual - expected_residual, 2)
         if abs(drift) >= 0.01 and drift > 0:
-            # drift < 0 means sweep absorbed PT5 into fully-paid state — that's
-            # fine. drift > 0 means a real payment failed to register.
             raise UserError(
                 f"Session {session_id}: residual {actual_residual} "
                 f"!= expected {expected_residual} "
-                f"(NetTotal {net_total} - registered {intended_registered}; "
+                f"(aggregate {aggregate_amount} - registered {intended_registered}; "
                 f"diff={drift}). A payment registration likely failed silently."
             )
 
         _logger.info(
             f"Session {session_id}: {invoice.name} created "
-            f"(residual={actual_residual}, credit_sales_reported={credit_amount})")
+            f"(aggregate={aggregate_amount}, on_account_total={on_account_total}, "
+            f"on_account_invs={len(on_account_moves)}, residual={actual_residual})")
         return {'model': 'account.move', 'id': invoice.id}
+
+    def _create_on_account_moves(self, on_account_invoices, cash_partner, tax,
+                                 product, sale_journal, session_id):
+        """For each pure-on-account invoice, create an out_invoice keyed to
+        the original customer and posted at CreditAmount. No payment registered
+        — the move stays open as customer AR until the customer settles."""
+        if not on_account_invoices:
+            return []
+
+        # Bulk customer lookup
+        customer_ids = sorted({
+            inv['CustomerID'] for inv in on_account_invoices if inv.get('CustomerID')
+        })
+        customer_map = {}
+        if customer_ids:
+            for p in self.env['res.partner'].search([
+                ('x_sql_customer_id', 'in', list(customer_ids)),
+                ('customer_rank', '>', 0),
+            ]):
+                customer_map[p.x_sql_customer_id] = p
+
+        moves = []
+        for inv in on_account_invoices:
+            mssql_invoice_id = inv['InvoiceID']
+            ref = f"MSSQL-INV-{mssql_invoice_id}"
+
+            # Per-invoice idempotency
+            existing = self.env['account.move'].search([
+                ('ref', '=', ref),
+                ('move_type', '=', 'out_invoice'),
+            ], limit=1)
+            if existing:
+                _logger.info(
+                    f"Session {session_id}: on-account inv {mssql_invoice_id} "
+                    f"already imported as {existing.name}")
+                moves.append(existing)
+                continue
+
+            credit_amount = round(float(inv.get('CreditAmount') or 0), 2)
+            if credit_amount <= 0:
+                continue
+
+            customer = customer_map.get(inv.get('CustomerID'))
+            if not customer:
+                _logger.warning(
+                    f"Session {session_id}: on-account inv {mssql_invoice_id} "
+                    f"has CustomerID={inv.get('CustomerID')} which is missing in "
+                    f"Odoo — falling back to cash customer.")
+                customer = cash_partner
+
+            inv_date = self._parse_mssql_date(inv.get('InvoiceDate'))
+            cust_label = inv.get('CustomerName') or '?'
+            phone = inv.get('PhoneNo') or ''
+            phone_part = f" ({phone})" if phone else ""
+            line_name = (
+                f"POS On-Account - Invoice {mssql_invoice_id} | "
+                f"{cust_label}{phone_part}"
+            )
+
+            move = self.env['account.move'].create({
+                'move_type': 'out_invoice',
+                'partner_id': customer.id,
+                'invoice_date': inv_date,
+                'date': inv_date,
+                'ref': ref,
+                'journal_id': sale_journal.id,
+                'invoice_line_ids': [(0, 0, {
+                    'product_id': product.id,
+                    'quantity': 1,
+                    'price_unit': credit_amount,
+                    'name': line_name,
+                    'tax_ids': [(6, 0, [tax.id])],
+                })],
+            })
+
+            self._assert_total_matches(
+                move, credit_amount, f"On-account inv {mssql_invoice_id}")
+            move.action_post()
+            moves.append(move)
+            _logger.info(
+                f"Session {session_id}: posted on-account {move.name} "
+                f"(MSSQL-INV-{mssql_invoice_id}, customer={customer.name}, "
+                f"amount={credit_amount})")
+
+        return moves
 
     # ── Post-step: cross-day CN redemption sweep ──────────────────────
 
@@ -674,6 +808,86 @@ class MssqlDirectInvoice(models.Model):
             )
         return '\n'.join(lines)
 
+    # ── Just-in-time customer sync ────────────────────────────────────
+
+    def _ensure_customers_exist(self, cursor, customer_ids):
+        """Make sure every MSSQL CustomerID has a matching res.partner.
+
+        Called from create_session_based_invoices for the small subset of
+        customers that actually transact on-account during the synced day.
+        Avoids running the 93k-row full sync just to capture a handful of
+        customers."""
+        if not customer_ids:
+            return
+        existing = {
+            p.x_sql_customer_id
+            for p in self.env['res.partner'].search([
+                ('x_sql_customer_id', 'in', list(customer_ids)),
+                ('customer_rank', '>', 0),
+            ])
+        }
+        missing = [cid for cid in customer_ids if cid not in existing]
+        if not missing:
+            return
+
+        placeholders = ','.join(['%s'] * len(missing))
+        cursor.execute(f"""
+            SELECT
+                CustomerID, CustomerName, CustomerAddress,
+                Phone1, Phone2, Mobile, EMail, WebSite,
+                CustVatNumber, CRNo, City, StreetName, BuildingNo,
+                PostalZone, POBox, Area, ContactPerson,
+                CustomerNote, CreditLimit
+            FROM [dbo].[tblCustomers]
+            WHERE CustomerID IN ({placeholders})
+        """, missing)
+        rows = cursor.fetchall()
+
+        to_create = []
+        for r in rows:
+            vals = {
+                'name': r['CustomerName'] or f"Customer {r['CustomerID']}",
+                'x_sql_customer_id': r['CustomerID'],
+                'customer_rank': 1,
+            }
+            if r.get('CustomerAddress'):
+                vals['street'] = r['CustomerAddress']
+            phones = [p for p in (r.get('Phone1'), r.get('Phone2')) if p]
+            if phones:
+                vals['phone'] = phones[0]
+            if r.get('Mobile'):
+                vals['mobile'] = r['Mobile']
+            if r.get('EMail'):
+                vals['email'] = r['EMail']
+            if r.get('WebSite'):
+                vals['website'] = r['WebSite']
+            if r.get('CustVatNumber'):
+                vals['vat'] = r['CustVatNumber']
+            if r.get('CRNo'):
+                vals['company_registry'] = str(r['CRNo'])
+            if r.get('City'):
+                vals['city'] = r['City']
+            if r.get('PostalZone'):
+                vals['zip'] = r['PostalZone']
+            if r.get('CustomerNote'):
+                vals['comment'] = r['CustomerNote']
+            if r.get('CreditLimit') is not None:
+                vals['credit_limit'] = float(r['CreditLimit'])
+            # Promote to company when business identifiers are present.
+            if vals.get('vat') or vals.get('company_registry'):
+                vals['company_type'] = 'company'
+            to_create.append(vals)
+
+        if to_create:
+            self.env['res.partner'].with_context(
+                tracking_disable=True, mail_create_nolog=True,
+                mail_create_nosubscribe=True, mail_notrack=True,
+                no_vat_validation=True,
+            ).create(to_create)
+            _logger.info(
+                f"on-account: just-in-time created {len(to_create)} customer(s) "
+                f"for {len(missing)} missing IDs")
+
     # ── Sales SQL Queries ─────────────────────────────────────────────
 
     def _query_sessions_for_date(self, cursor, date_str, next_date):
@@ -710,8 +924,14 @@ class MssqlDirectInvoice(models.Model):
         # Both keys are emitted so _payment_pcamount() can detect the record_data
         # schema version (explicit PCAmount = post-fix; only Amount = legacy).
         #
-        # PT5 (return voucher) is excluded: under R8, the matching credit note
-        # reconciles against the redemption invoice directly.
+        # Excluded payment types:
+        # - PT5 (return voucher): matching CN reconciles against the redemption
+        #   invoice directly (R8).
+        # - PT6 (on-account / على الحساب): purely on-account invoices are
+        #   extracted from the session aggregate and posted as per-customer
+        #   out_invoice records (see _query_all_session_on_account_invoices).
+        #   Any residual PT6 covers mixed-payment invoices that stay in the
+        #   aggregate; that residual is left open as session-level AR.
         cursor.execute(f"""
             SELECT
                 ca.SessionID,
@@ -727,12 +947,64 @@ class MssqlDirectInvoice(models.Model):
             LEFT JOIN [dbo].[tblPaymentType] pt ON cad.PaymentType = pt.PaymentTypeID
             WHERE ca.SessionID IN ({placeholders})
               AND (cad.PCAmount > 0 OR cad.DifAmount != 0)
-              AND cad.PaymentType != 5
+              AND cad.PaymentType NOT IN (5, 6)
             ORDER BY ca.SessionID, cad.PaymentType
         """, session_ids)
         results = {}
         for row in cursor.fetchall():
             results.setdefault(row['SessionID'], []).append(row)
+        return results
+
+    def _query_all_session_on_account_invoices(self, cursor, session_ids):
+        """Fetch purely-on-account invoices per session.
+
+        Definition of 'pure on-account' (strict): CreditAmount > 0 and every
+        other payment column is 0. In that scenario CreditAmount equals
+        NetTotal, so the whole invoice gets extracted as one customer-linked
+        out_invoice. Mixed-payment invoices (e.g., 50 cash + 50 on-account)
+        stay in the session aggregate.
+
+        CustomerID = 0 / NULL invoices are still extracted; the processor
+        falls back to the cash customer with a warning.
+        """
+        if not session_ids:
+            return {}
+        placeholders = ','.join(['%s'] * len(session_ids))
+        cursor.execute(f"""
+            SELECT
+                i.SessionID,
+                i.InvoiceID,
+                i.CustomerID,
+                i.CustomerName,
+                i.PhoneNo,
+                i.InvoiceDate,
+                ROUND(i.NetTotal, 2)     AS NetTotal,
+                ROUND(i.CreditAmount, 2) AS CreditAmount
+            FROM [dbo].[tblInvoice] i
+            WHERE i.SessionID IN ({placeholders})
+              AND i.IsReturned = 0
+              AND ISNULL(i.CreditAmount, 0) > 0
+              AND ISNULL(i.CashAmount, 0) = 0
+              AND ISNULL(i.SpanAmount, 0) = 0
+              AND ISNULL(i.CreditCardAmount, 0) = 0
+              AND ISNULL(i.VisaAmount, 0) = 0
+              AND ISNULL(i.MasterCard, 0) = 0
+              AND ISNULL(i.CheckAmount, 0) = 0
+              AND ISNULL(i.ReturnAmount, 0) = 0
+              AND ISNULL(i.ReturnSlip, 0) = 0
+            ORDER BY i.SessionID, i.InvoiceID
+        """, session_ids)
+        results = {}
+        for row in cursor.fetchall():
+            results.setdefault(row['SessionID'], []).append({
+                'InvoiceID': row['InvoiceID'],
+                'CustomerID': row['CustomerID'] or 0,
+                'CustomerName': row['CustomerName'],
+                'PhoneNo': row['PhoneNo'],
+                'InvoiceDate': str(row['InvoiceDate']) if row['InvoiceDate'] else None,
+                'NetTotal': float(row['NetTotal']) if row['NetTotal'] else 0.0,
+                'CreditAmount': float(row['CreditAmount']) if row['CreditAmount'] else 0.0,
+            })
         return results
 
     @staticmethod
@@ -922,16 +1194,34 @@ class MssqlDirectInvoice(models.Model):
     # ── Strict session-aggregate lookup ───────────────────────────────
 
     def _find_session_aggregate_for_mssql_invoice(self, mssql_invoice_id):
-        """Return the Odoo session aggregate (account.move) that owns this
-        MSSQL invoice, or False if not yet synced.
+        """Return the Odoo move that owns this MSSQL invoice, or False if not
+        yet synced.
 
-        Daily-sync design rule: a CN may only reconcile against a session
-        aggregate that already exists in Odoo. No backfills, no synthetic
-        MSSQL-INV-{id} moves. If the owning session hasn't been synced, the
-        CN queue line fails with a clear 'sync session X first' message.
+        Lookup priority:
+        1. Per-invoice on-account move (ref = MSSQL-INV-{id}). These are
+           created by the on-account extraction path and partnered to the
+           real MSSQL customer. CNs against on-account invoices reconcile
+           here.
+        2. Session aggregate (ref = 'Session {sid} -%'). Default for normal
+           cash/card sales.
+
+        Strict rule (no backfills): we never *create* MSSQL-INV-{id} from
+        the CN processor. If the owning session hasn't been synced, the CN
+        queue line fails so the cron can retry once the session arrives.
         """
         if not mssql_invoice_id:
             return False
+
+        # 1. Per-invoice on-account move
+        per_inv = self.env['account.move'].search([
+            ('ref', '=', f'MSSQL-INV-{mssql_invoice_id}'),
+            ('move_type', '=', 'out_invoice'),
+            ('state', '=', 'posted'),
+        ], limit=1)
+        if per_inv:
+            return per_inv
+
+        # 2. Session aggregate via MSSQL SessionID lookup
         conn = self._get_connection()
         cursor = conn.cursor(as_dict=True)
         try:
@@ -980,7 +1270,7 @@ class MssqlDirectInvoice(models.Model):
             raise UserError(
                 f"CN {cn_invoice_id}: NetTotal {net_total} is not positive.")
 
-        partner = self._get_cash_customer_partner()
+        cash_partner = self._get_cash_customer_partner()
         tax = self._get_or_create_vat_15_inclusive('sale')
         product = self._get_or_create_pos_return_product()
         sale_journal = self.env['account.journal'].search([
@@ -990,15 +1280,23 @@ class MssqlDirectInvoice(models.Model):
         if not sale_journal:
             raise UserError('No sales journal found.')
 
-        # Look up the original session aggregate for informational linkage.
-        # We intentionally do NOT set reversed_entry_id at create time — Odoo
-        # 18's account.move._post auto-reconciles any move with a posted
-        # reversed_entry_id against it, which steals AR that should go to
-        # the cash refund or the redemption invoice (handled by
-        # _handle_cn_redemption below). We set reversed_entry_id *after*
-        # post only for the outstanding-voucher case, as a UX breadcrumb.
+        # Look up the original move (per-invoice MSSQL-INV-* preferred over
+        # session aggregate). We intentionally do NOT set reversed_entry_id
+        # at create time — Odoo 18's account.move._post auto-reconciles any
+        # move with a posted reversed_entry_id against it, which steals AR
+        # that should go to the cash refund or the redemption invoice
+        # (handled by _handle_cn_redemption below). We set reversed_entry_id
+        # *after* post only for the outstanding-voucher case as a UX breadcrumb.
         original_odoo_invoice = self._locate_original_for_cn(
             original_session_id, original_invoice_id, cn_date, data, cn_invoice_id)
+
+        # Partner selection: when the original is an on-account per-invoice
+        # move (real customer, not the cash customer), put the CN on that
+        # customer's ledger so AR-to-AR reconciliation can actually close it.
+        # Session-aggregate originals stay on عميل نقدي (same customer both sides).
+        partner = cash_partner
+        if original_odoo_invoice and original_odoo_invoice.partner_id != cash_partner:
+            partner = original_odoo_invoice.partner_id
 
         cn_vals = {
             'move_type': 'out_refund',
@@ -1032,13 +1330,29 @@ class MssqlDirectInvoice(models.Model):
 
     def _locate_original_for_cn(self, original_session_id, original_invoice_id,
                                 cn_date, data, cn_invoice_id):
-        """Return the Odoo session aggregate that owns this CN's original invoice.
+        """Return the Odoo move that owns this CN's original invoice.
 
-        Strict rule: no backfills. If the original session isn't synced yet,
-        return False and let the processor raise UserError (queue line fails,
-        cron retries after the missing session is eventually synced).
+        Lookup priority (matches _find_session_aggregate_for_mssql_invoice):
+        1. Per-invoice on-account move (ref = MSSQL-INV-{id}) — has the real
+           customer, open AR, intended target for CNs against on-account sales.
+        2. Session aggregate (ref = 'Session {sid} -%') — for CNs against
+           ordinary cash/card sales.
+
+        Strict rule: no backfills. If neither exists, return False and let
+        the processor raise UserError (queue line fails, cron retries once
+        the missing session is synced).
         """
-        # Session known from the CN enrichment step
+        # 1. Per-invoice on-account move
+        if original_invoice_id:
+            per_inv = self.env['account.move'].search([
+                ('ref', '=', f'MSSQL-INV-{original_invoice_id}'),
+                ('move_type', '=', 'out_invoice'),
+                ('state', '=', 'posted'),
+            ], limit=1)
+            if per_inv:
+                return per_inv
+
+        # 2. Session aggregate via the SessionID we already know
         if original_session_id:
             inv = self.env['account.move'].search([
                 ('ref', '=like', f'Session {original_session_id} -%'),
@@ -1047,8 +1361,8 @@ class MssqlDirectInvoice(models.Model):
             ], limit=1)
             if inv:
                 return inv
-        # Fall back to MSSQL lookup by invoice id (defensive — enrichment
-        # should have populated OriginalSessionID already).
+
+        # 3. Defensive: re-derive SessionID from MSSQL by InvoiceID
         return self._find_session_aggregate_for_mssql_invoice(original_invoice_id)
 
     def _reconcile_ar(self, move_a, move_b, label):
@@ -1101,12 +1415,16 @@ class MssqlDirectInvoice(models.Model):
                 ('state', '=', 'posted'),
             ], limit=1)
             if not redemption_invoice:
-                raise UserError(
-                    f"CN {cn_invoice_id}: redeemed in session {used_session_id} "
-                    f"(per tblCashierActivityReturnAmount) but that session "
-                    f"isn't synced in Odoo yet. Sync that session first, then "
-                    f"retry this CN queue line."
-                )
+                # Cross-day-forward: CN was issued today but redeemed in a
+                # future session not yet synced. Leave as customer credit;
+                # _sweep_session_cn_redemptions on that session's eventual
+                # sync will pick this CN up and reconcile retroactively.
+                _logger.info(
+                    f"CN {credit_note.name}: redeemed in session {used_session_id} "
+                    f"(per CRA) but that session isn't in Odoo yet — leaving as "
+                    f"customer credit, post-step sweep will reconcile when "
+                    f"session {used_session_id} syncs.")
+                return
             self._reconcile_ar(
                 credit_note, redemption_invoice,
                 f"CN {cn_invoice_id} (redeemed via CRA session {used_session_id})")
@@ -1116,11 +1434,12 @@ class MssqlDirectInvoice(models.Model):
         if redemption_used and used_invoice_id:
             redemption_invoice = self._find_session_aggregate_for_mssql_invoice(used_invoice_id)
             if not redemption_invoice:
-                raise UserError(
-                    f"CN {cn_invoice_id}: redemption invoice {used_invoice_id} "
-                    f"belongs to a session that is not yet synced in Odoo. "
-                    f"Sync that session first, then retry this CN queue line."
-                )
+                # Same cross-day-forward case as above; defer to post-step sweep.
+                _logger.info(
+                    f"CN {credit_note.name}: redemption invoice {used_invoice_id} "
+                    f"belongs to a session not yet in Odoo — leaving as customer "
+                    f"credit, post-step sweep will reconcile when that session syncs.")
+                return
             self._reconcile_ar(credit_note, redemption_invoice, f"CN {cn_invoice_id} (redeemed)")
             return
 
