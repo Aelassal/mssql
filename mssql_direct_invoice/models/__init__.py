@@ -5,6 +5,8 @@ from . import mssql_direct_partner
 from . import mssql_direct_product
 from . import mssql_direct_invoice
 from . import mssql_direct_bill
+from . import mssql_direct_expense_category_map
+from . import mssql_direct_expense
 from . import mssql_direct_sync_log
 from . import mssql_direct_sync_queue
 from . import mssql_direct_sync_queue_line

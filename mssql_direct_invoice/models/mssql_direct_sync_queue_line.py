@@ -45,6 +45,7 @@ class MssqlDirectSyncQueueLine(models.Model):
             'sales_invoice': '_process_queue_sales_invoice',
             'sales_credit_note': '_process_queue_sales_credit_note',
             'purchase_bill': '_process_queue_purchase_bill',
+            'expense': '_process_queue_expense',
         }
 
         method_name = processor_map.get(sync_type)

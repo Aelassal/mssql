@@ -286,12 +286,20 @@ class MssqlDirectInvoice(models.Model):
 
             line_vals_list = []
             skipped_existing = 0
+            skipped_return_only = 0
 
             for session in sessions:
                 session_id = session['SessionID']
 
                 if any(ref.startswith(f"Session {session_id} -") for ref in existing_refs):
                     skipped_existing += 1
+                    continue
+
+                # Pure return-counter sessions have nothing on the sales side —
+                # the actual refunds are imported via create_sales_credit_notes
+                # from tblZatcaCreditNote.
+                if not (session.get('SalesInvoiceCount') or 0):
+                    skipped_return_only += 1
                     continue
 
                 record_data = json.dumps({
@@ -313,6 +321,10 @@ class MssqlDirectInvoice(models.Model):
 
             if skipped_existing:
                 _logger.info(f"Skipped {skipped_existing} already-synced sessions")
+            if skipped_return_only:
+                _logger.info(
+                    f"Skipped {skipped_return_only} return-only sessions "
+                    f"(SalesInvoiceCount=0) — refunds come via credit-note sync")
 
             if not line_vals_list:
                 queue.unlink()

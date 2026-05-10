@@ -21,6 +21,7 @@ class MssqlDirectOperations(models.TransientModel):
         ('sync_sales_invoices', 'Import Sales Invoices (Direct)'),
         ('sync_sales_credit_notes', 'Import Sales Credit Notes'),
         ('sync_purchase_bills', 'Import Purchase Bills (Direct)'),
+        ('sync_expenses', 'Import Expenses'),
         ('update_products', 'Update Products (Prices + Barcode)'),
     ], string='Operation', required=True)
 
@@ -100,6 +101,23 @@ class MssqlDirectOperations(models.TransientModel):
                 current_date += timedelta(days=1)
             summary = '\n'.join(results)
             return config._success_notification('Purchase Bill Import', summary)
+
+        elif op == 'sync_expenses':
+            if not self.date_from:
+                raise UserError('Please specify a Date From for expense import.')
+            date_from = self.date_from
+            date_to = self.date_to or self.date_from
+            current_date = date_from
+            results = []
+            while current_date <= date_to:
+                try:
+                    config.sync_expenses(current_date)
+                    results.append(f"{current_date}: OK")
+                except Exception as e:
+                    results.append(f"{current_date}: Error - {str(e)}")
+                current_date += timedelta(days=1)
+            summary = '\n'.join(results)
+            return config._success_notification('Expense Import', summary)
 
         else:
             raise UserError(f'Unknown operation: {op}')

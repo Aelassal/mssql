@@ -26,6 +26,33 @@ class MssqlDirectSync(models.Model):
     products_fetched = fields.Boolean(string='Products Fetched', default=False)
     vendors_fetched = fields.Boolean(string='Vendors Fetched', default=False)
     customers_fetched = fields.Boolean(string='Customers Fetched', default=False)
+    expenses_fetched = fields.Boolean(string='Expense Categories Fetched', default=False)
+
+    # ── Expense Sync Configuration ────────────────────────────────────
+    expense_journal_id = fields.Many2one(
+        'account.journal', string='Expense Journal',
+        domain="[('type', 'in', ('general', 'purchase'))]",
+        help="Journal used for MSSQL expense entries.")
+    expense_counterpart_account_id = fields.Many2one(
+        'account.account', string='Expense Counterpart Account',
+        help="Credit-side account for every expense entry. MSSQL doesn't "
+             "record what bank/cash paid, so all entries land here until "
+             "reconciled in Odoo via a payment.(credit)")
+    vat_input_account_id = fields.Many2one(
+        'account.account', string='VAT Input Account',
+        help="Debit account for the 15% VAT line on taxable expenses.")
+    expense_default_account_id = fields.Many2one(
+        'account.account', string='Default Expense Account',
+        help="Fallback expense account when an MSSQL ExpenseCatID is not "
+             "mapped in the category mapping table.")
+    tax_settlement_account_id = fields.Many2one(
+        'account.account', string='Tax Settlement Account',
+        help="Account debited when a negative ZATCA expense row is "
+             "imported (i.e., a VAT/tax payment to the authority). "
+             "Typically the VAT Output / VAT Payable liability account.")
+    expense_category_map_ids = fields.One2many(
+        'mssql.expense.category.map', 'sync_config_id',
+        string='Expense Category Mapping')
 
     # ── Connection ────────────────────────────────────────────────────
 
@@ -165,12 +192,13 @@ class MssqlDirectSync(models.Model):
 
     @api.model
     def cron_daily_sync(self):
-        """Cron entry point: sync yesterday's sales + purchases for every
-        configured connection. Failures on one config don't block the others.
+        """Cron entry point: sync yesterday's sales + purchases + expenses
+        for every configured connection. Failures on one config don't block
+        the others.
 
         `create_session_based_invoices` auto-chains to `create_sales_credit_notes`
         for the same date, so this call covers sessions + CNs + purchase bills
-        in one pass.
+        + expenses in one pass.
         """
         target_date = fields.Date.today() - timedelta(days=1)
         configs = self.env['mssql.direct.sync'].search([])
@@ -195,6 +223,12 @@ class MssqlDirectSync(models.Model):
             except Exception as e:
                 _logger.error(
                     f"cron_daily_sync[{config.name}] purchase sync failed "
+                    f"for {target_date}: {e}")
+            try:
+                config.sync_expenses(target_date)
+            except Exception as e:
+                _logger.error(
+                    f"cron_daily_sync[{config.name}] expense sync failed "
                     f"for {target_date}: {e}")
 
     @staticmethod

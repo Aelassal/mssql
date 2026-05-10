@@ -15,8 +15,6 @@
                             invisible="customers_fetched"/>
                     <button name="action_update_products" string="Update Products" type="object" class="btn-secondary"
                             invisible="not products_fetched"/>
-                    <button name="action_create_invoice" string="Create Sales Invoices" type="object" class="btn-primary"/>
-                    <button name="sync_purchase_invoices" string="Create Vendor Bills" type="object" class="btn-primary"/>
                     <button name="action_repair_backfills"
                             string="Repair Legacy Backfills"
                             type="object" class="btn-warning"
@@ -35,8 +33,6 @@
                             <field name="trust_cert"/>
                         </group>
                         <group string="Sync Settings">
-                            <field name="invoice_date"/>
-                            <field name="purchase_invoice_date"/>
                             <field name="products_fetched" readonly="1"/>
                             <field name="vendors_fetched" readonly="0"/>
                             <field name="customers_fetched" readonly="1"/>
@@ -96,6 +92,53 @@
                                 <code>PaymentMethod</code> values from
                                 <code>tblSuppliersPayment</code>. Unmapped methods
                                 cause vendor-bill queue lines to fail.
+                            </div>
+                        </page>
+                        <page string="Expense Configuration" name="expense_config">
+                            <group>
+                                <group string="Accounts">
+                                    <field name="expense_journal_id"
+                                           options="{'no_create': True, 'no_open': True}"/>
+                                    <field name="expense_counterpart_account_id"
+                                           options="{'no_create': True}"/>
+                                    <field name="vat_input_account_id"
+                                           options="{'no_create': True}"/>
+                                    <field name="expense_default_account_id"
+                                           options="{'no_create': True}"/>
+                                    <field name="tax_settlement_account_id"
+                                           options="{'no_create': True}"/>
+                                </group>
+                                <group string="Status">
+                                    <field name="expenses_fetched" readonly="1"/>
+                                </group>
+                            </group>
+
+                            <div class="oe_button_box" name="expense_buttons">
+                                <button name="action_fetch_expense_categories"
+                                        type="object"
+                                        string="Fetch Expense Categories"
+                                        class="btn-secondary"
+                                        icon="fa-download"/>
+                            </div>
+
+                            <field name="expense_category_map_ids" nolabel="1">
+                                <list editable="bottom">
+                                    <field name="mssql_cat_id" readonly="1"/>
+                                    <field name="mssql_cat_name" readonly="1"/>
+                                    <field name="account_id"
+                                           options="{'no_create': True}"/>
+                                </list>
+                            </field>
+
+                            <div class="alert alert-info" role="alert" style="margin: 10px;">
+                                <strong>Counterpart account:</strong> MSSQL
+                                <code>tblExpense</code> records the vendor and
+                                amount but never the bank/cash account that
+                                paid. Every expense entry credits the
+                                counterpart account selected above. Reconcile
+                                later via an Odoo payment. Negative-amount
+                                rows (refunds, VAT settlements) are imported
+                                as reverse entries automatically.
                             </div>
                         </page>
                     </notebook>

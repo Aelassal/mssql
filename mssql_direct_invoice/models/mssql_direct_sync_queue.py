@@ -7,6 +7,7 @@ SYNC_TYPE_SELECTION = [
     ('sales_invoice', 'Sales Invoice'),
     ('sales_credit_note', 'Sales Credit Note'),
     ('purchase_bill', 'Purchase Bill'),
+    ('expense', 'Expense'),
 ]
 
 
